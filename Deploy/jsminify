@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -e
 echo "This shell will minify the Javascript in Harbor project."
 echo "Usage: #jsminify [input file] [output file]"
@@ -7,15 +7,18 @@ echo "Output:'js mini file'"
 
 #prepare workspace
 rm -rf $2 /tmp/harbor.app.temp.js
-BASEPATH=/go/bin
-
+#BASEPATH=/go/bin
+BASEPATH=/home/yhua/Test4Harbor/harbor
 #concat the js files from js include file
 echo "Concat js files..."
 cat $1  |while read LINE
 do
-    TEMP="$BASEPATH""$LINE"
-    cat `echo "$TEMP" | sed 's/<script src=\"//g' |sed 's/\"><\/script>//g'` >> /tmp/harbor.app.temp.js
-    echo "\n" >> /tmp/harbor.app.temp.js
+    if [ -n "$LINE" ] 
+    then
+        TEMP="$BASEPATH""$LINE"
+        cat `echo "$TEMP" | sed 's/<script src=\"//g' |sed 's/\"><\/script>//g'` >> /tmp/harbor.app.temp.js
+        echo "\n" >> /tmp/harbor.app.temp.js
+    fi
 done
 
 #remove space
