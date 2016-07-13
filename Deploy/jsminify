@@ -7,8 +7,7 @@ echo "Output:'js mini file'"
 
 #prepare workspace
 rm -rf $2 /tmp/harbor.app.temp.js
-#BASEPATH=/go/bin
-BASEPATH=/home/yhua/Test4Harbor/harbor
+BASEPATH=/go/bin
 #concat the js files from js include file
 echo "Concat js files..."
 cat $1  |while read LINE
