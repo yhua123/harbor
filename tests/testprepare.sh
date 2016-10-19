@@ -3,7 +3,7 @@
 cp tests/docker-compose.test.yml Deploy/.
 
 mkdir /etc/ui
-cp Deploy/config/ui/private_key.pem /etc/ui/.
+cp Deploy/common/config/ui/private_key.pem /etc/ui/.
 
 mkdir conf
-cp Deploy/config/ui/app.conf conf/.
+cp Deploy/common/config/ui/app.conf conf/.
