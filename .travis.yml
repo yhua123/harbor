@@ -80,8 +80,8 @@ script:
   - sudo lsof -i:3306
   - sudo kill -9 $(pidof mysqld)
   - sudo lsof -i:3306
-  - systemctl list-units --type=service
-  - systemctl stop mysqld. service
+  - sudo systemctl list-units --type=service
+  - sudo /etc/init.d/mysqld stop 
   - docker-compose -f ./make/docker-compose.test.yml up -d
   - sudo lsof -i:3306
   - go list ./... | grep -v -E 'vendor|tests' | xargs -L1 fgt golint
