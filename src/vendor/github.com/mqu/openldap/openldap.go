@@ -199,24 +199,32 @@ func (self *Ldap) Search(base string, scope int, filter string, attributes []str
 
 	// transform []string to C.char** null terminated array (attributes argument)
 	_attributes := make([]*C.char, len(attributes)+1) // default set to nil (NULL in C)
-
 	for i, arg := range attributes {
 		_attributes[i] = C.CString(arg)
 		defer C.free(unsafe.Pointer(_attributes[i]))
 	}
-
 	var msg *C.LDAPMessage
-
-	// DEPRECATED
+        var rv int
+        var timeout C.struct_timeval
+        timeout.tv_sec = -1
+        timeout.tv_usec = 0
+	
+        // DEPRECATED
 	// API: int ldap_search_s (LDAP *ld, char *base, int scope, char *filter, char **attrs, int attrsonly, LdapMessage * ldap_res)
-	rv := int(C.ldap_search_s(self.conn, _base, C.int(scope), _filter, &_attributes[0], C.int(attrsonly), &msg))
+	// rv := int(C.ldap_search_s(self.conn, _base, C.int(scope), _filter, &_attributes[0], C.int(attrsonly), &msg))
 
-	if rv == LDAP_OPT_SUCCESS {
-		_msg := new(LdapMessage)
-		_msg.ldap = self
-		_msg.errno = rv
-		_msg.msg = msg
-		return _msg, nil
+        msgid := int(C.ldap_search (self.conn, _base, C.int(scope), _filter, &_attributes[0], C.int(attrsonly)))
+
+	if msgid != LDAP_OPT_ERROR {
+		rv = int(C.ldap_result (self.conn, LDAP_RES_ANY, LDAP_MSG_ONE, &timeout, &msg ))
+                if rv != LDAP_OPT_ERROR {
+                        _msg := new(LdapMessage)
+                        _msg.ldap = self
+                        _msg.errno = rv
+                        _msg.msg = msg
+
+		        return _msg, nil
+                }
 	}
 
 	return nil, errors.New(fmt.Sprintf("LDAP::Search() error : %d (%s)", rv, ErrorToString(rv)))
