@@ -19,5 +19,5 @@ services:
       - /data/database:/var/lib/mysql
     env_file:
       - ./common/config/db/env
-    ports:
-      - 3306:3306
+#    ports:
+#      - 3306:3306
