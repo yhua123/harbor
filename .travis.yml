@@ -14,11 +14,11 @@ dist: trusty
 
 env:
   DB_HOST: 127.0.0.1
-  DB_PORT: 3306 
+  DB_PORT: 13306 
   DB_USR: root 
   DB_PWD: root123
   MYSQL_HOST: localhost
-  MYSQL_PORT: 3306 
+  MYSQL_PORT: 13306 
   MYSQL_USR: root 
   MYSQL_PWD: root123
   DOCKER_COMPOSE_VERSION: 1.7.1
