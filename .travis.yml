@@ -34,7 +34,8 @@ before_install:
    - sudo ./tests/hostcfg.sh
    - sudo ./make/prepare
 
-install: 
+install:
+  - sudo netstat -ap | grep 3306 
   - sudo apt-get update && sudo apt-get install -y libldap2-dev 
   - sudo apt-get install -y sqlite3
 #  - sudo apt-get remove -y mysql-common mysql-server-5.5 mysql-server-core-5.5 mysql-client-5.5 mysql-client-core-5.5
