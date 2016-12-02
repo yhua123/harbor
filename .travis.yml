@@ -79,7 +79,9 @@ script:
   - sudo lsof -i:3306
   - sudo kill -9 $(pidof mysqld)
   - sudo lsof -i:3306
-  - sudo ./tests/testprepare.sh 
+  - sudo ./tests/testprepare.sh
+  - sudo lsof -i:3306
+ 
   - docker-compose -f ./make/docker-compose.test.yml up -d
   - go list ./... | grep -v -E 'vendor|tests' | xargs -L1 fgt golint
   - go list ./... | grep -v -E 'vendor|tests' | xargs -L1 go vet
