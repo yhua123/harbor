@@ -20,4 +20,4 @@ services:
     env_file:
       - ./common/config/db/env
     ports:
-      - 13306:3306
+      - 3306:3306
