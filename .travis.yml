@@ -1,4 +1,5 @@
 sudo: true
+test
 
 language: go
 
