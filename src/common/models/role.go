@@ -30,5 +30,5 @@ type Role struct {
 	RoleCode string `orm:"column(role_code)" json:"role_code"`
 	Name     string `orm:"column(name)" json:"role_name"`
 
-	RoleMask int `orm:"role_mask" json:"role_mask"`
+	RoleMask int `orm:"column(role_mask)" json:"role_mask"`
 }

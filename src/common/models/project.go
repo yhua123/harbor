@@ -33,7 +33,7 @@ type Project struct {
 	//This field does not have correspondent column in DB, this is just for UI to disable button
 	Togglable bool `orm:"-"`
 
-	UpdateTime time.Time `orm:"update_time" json:"update_time"`
+	UpdateTime time.Time `orm:"column(update_time)" json:"update_time"`
 	Role       int       `orm:"-" json:"current_user_role_id"`
 	RepoCount  int       `orm:"-" json:"repo_count"`
 }
