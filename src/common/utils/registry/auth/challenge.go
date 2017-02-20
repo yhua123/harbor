@@ -18,7 +18,7 @@ package auth
 import (
 	"net/http"
 
-	au "github.com/docker/distribution/registry/client/auth"
+	au "github.com/docker/distribution/registry/client/auth/challenge"
 )
 
 // ParseChallengeFromResponse ...

@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	au "github.com/docker/distribution/registry/client/auth"
+	au "github.com/docker/distribution/registry/client/auth/challenge"
 	"github.com/vmware/harbor/src/common/utils"
 	"github.com/vmware/harbor/src/common/utils/registry"
 )
