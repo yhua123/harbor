@@ -1,127 +1,126 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+   Copyright (c) 2016 VMware, Inc. All Rights Reserved.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
 
 package api
 
 import (
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 
+	"github.com/vmware/harbor/src/common/api"
 	"github.com/vmware/harbor/src/common/dao"
 	"github.com/vmware/harbor/src/common/models"
 	"github.com/vmware/harbor/src/common/utils"
 	"github.com/vmware/harbor/src/common/utils/log"
 	"github.com/vmware/harbor/src/common/utils/registry"
 	"github.com/vmware/harbor/src/common/utils/registry/auth"
+	registry_error "github.com/vmware/harbor/src/common/utils/registry/error"
 	"github.com/vmware/harbor/src/ui/config"
 )
 
 // TargetAPI handles request to /api/targets/ping /api/targets/{}
 type TargetAPI struct {
-	BaseController
+	api.BaseAPI
 	secretKey string
 }
 
 // Prepare validates the user
 func (t *TargetAPI) Prepare() {
-	t.BaseController.Prepare()
-	if !t.SecurityCtx.IsAuthenticated() {
-		t.HandleUnauthorized()
-		return
-	}
+	t.secretKey = config.SecretKey()
 
-	if !t.SecurityCtx.IsSysAdmin() {
-		t.HandleForbidden(t.SecurityCtx.GetUsername())
-		return
-	}
-
-	var err error
-	t.secretKey, err = config.SecretKey()
+	userID := t.ValidateUser()
+	isSysAdmin, err := dao.IsAdminRole(userID)
 	if err != nil {
-		log.Errorf("failed to get secret key: %v", err)
+		log.Errorf("error occurred in IsAdminRole: %v", err)
 		t.CustomAbort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 	}
-}
 
-func (t *TargetAPI) ping(endpoint, username, password string, insecure bool) {
-	registry, err := newRegistryClient(endpoint, insecure, username, password)
-	if err == nil {
-		err = registry.Ping()
-	}
-
-	if err != nil {
-		log.Errorf("failed to ping target: %v", err)
-		// do not return any detail information of the error, or may cause SSRF security issue #3755
-		t.RenderError(http.StatusBadRequest, "failed to ping target")
-		return
+	if !isSysAdmin {
+		t.CustomAbort(http.StatusForbidden, http.StatusText(http.StatusForbidden))
 	}
 }
 
 // Ping validates whether the target is reachable and whether the credential is valid
 func (t *TargetAPI) Ping() {
-	req := struct {
-		ID       *int64  `json:"id"`
-		Endpoint *string `json:"endpoint"`
-		Username *string `json:"username"`
-		Password *string `json:"password"`
-		Insecure *bool   `json:"insecure"`
-	}{}
-	t.DecodeJSONReq(&req)
+	var endpoint, username, password string
 
-	target := &models.RepTarget{}
-	if req.ID != nil {
-		var err error
-		target, err = dao.GetRepTarget(*req.ID)
+	idStr := t.GetString("id")
+	if len(idStr) != 0 {
+		id, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil {
-			t.HandleInternalServerError(fmt.Sprintf("failed to get target %d: %v", *req.ID, err))
-			return
+			t.CustomAbort(http.StatusBadRequest, fmt.Sprintf("id %s is invalid", idStr))
 		}
+
+		target, err := dao.GetRepTarget(id)
+		if err != nil {
+			log.Errorf("failed to get target %d: %v", id, err)
+			t.CustomAbort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+		}
+
 		if target == nil {
-			t.HandleNotFound(fmt.Sprintf("target %d not found", *req.ID))
-			return
+			t.CustomAbort(http.StatusNotFound, http.StatusText(http.StatusNotFound))
 		}
-		if len(target.Password) != 0 {
-			target.Password, err = utils.ReversibleDecrypt(target.Password, t.secretKey)
+
+		endpoint = target.URL
+		username = target.Username
+		password = target.Password
+
+		if len(password) != 0 {
+			password, err = utils.ReversibleDecrypt(password, t.secretKey)
 			if err != nil {
-				t.HandleInternalServerError(fmt.Sprintf("failed to decrypt password: %v", err))
-				return
+				log.Errorf("failed to decrypt password: %v", err)
+				t.CustomAbort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 			}
 		}
-	}
-
-	if req.Endpoint != nil {
-		url, err := utils.ParseEndpoint(*req.Endpoint)
-		if err != nil {
-			t.HandleBadRequest(err.Error())
-			return
+	} else {
+		endpoint = t.GetString("endpoint")
+		if len(endpoint) == 0 {
+			t.CustomAbort(http.StatusBadRequest, "id or endpoint is needed")
 		}
 
-		// Prevent SSRF security issue #3755
-		target.URL = url.Scheme + "://" + url.Host + url.Path
-	}
-	if req.Username != nil {
-		target.Username = *req.Username
-	}
-	if req.Password != nil {
-		target.Password = *req.Password
-	}
-	if req.Insecure != nil {
-		target.Insecure = *req.Insecure
+		username = t.GetString("username")
+		password = t.GetString("password")
 	}
 
-	t.ping(target.URL, target.Username, target.Password, target.Insecure)
+	registry, err := newRegistryClient(endpoint, api.GetIsInsecure(), username, password,
+		"", "", "")
+	if err != nil {
+		// timeout, dns resolve error, connection refused, etc.
+		if urlErr, ok := err.(*url.Error); ok {
+			if netErr, ok := urlErr.Err.(net.Error); ok {
+				t.CustomAbort(http.StatusBadRequest, netErr.Error())
+			}
+
+			t.CustomAbort(http.StatusBadRequest, urlErr.Error())
+		}
+
+		log.Errorf("failed to create registry client: %#v", err)
+		t.CustomAbort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+	}
+
+	if err = registry.Ping(); err != nil {
+		if regErr, ok := err.(*registry_error.Error); ok {
+			t.CustomAbort(regErr.StatusCode, regErr.Detail)
+		}
+
+		log.Errorf("failed to ping registry %s: %v", registry.Endpoint.String(), err)
+		t.CustomAbort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+	}
 }
 
 // Get ...
@@ -138,7 +137,17 @@ func (t *TargetAPI) Get() {
 		t.CustomAbort(http.StatusNotFound, http.StatusText(http.StatusNotFound))
 	}
 
-	target.Password = ""
+	// The reason why the password is returned is that when user just wants to
+	// modify other fields of target he does not need to input the password again.
+	// The security issue can be fixed by enable https.
+	if len(target.Password) != 0 {
+		pwd, err := utils.ReversibleDecrypt(target.Password, t.secretKey)
+		if err != nil {
+			log.Errorf("failed to decrypt password: %v", err)
+			t.CustomAbort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+		}
+		target.Password = pwd
+	}
 
 	t.Data["json"] = target
 	t.ServeJSON()
@@ -154,7 +163,16 @@ func (t *TargetAPI) List() {
 	}
 
 	for _, target := range targets {
-		target.Password = ""
+		if len(target.Password) == 0 {
+			continue
+		}
+
+		str, err := utils.ReversibleDecrypt(target.Password, t.secretKey)
+		if err != nil {
+			log.Errorf("failed to decrypt password: %v", err)
+			t.CustomAbort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+		}
+		target.Password = str
 	}
 
 	t.Data["json"] = targets
@@ -208,55 +226,38 @@ func (t *TargetAPI) Post() {
 func (t *TargetAPI) Put() {
 	id := t.GetIDFromURL()
 
-	target, err := dao.GetRepTarget(id)
+	originalTarget, err := dao.GetRepTarget(id)
 	if err != nil {
 		log.Errorf("failed to get target %d: %v", id, err)
 		t.CustomAbort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 	}
 
-	if target == nil {
+	if originalTarget == nil {
 		t.CustomAbort(http.StatusNotFound, http.StatusText(http.StatusNotFound))
 	}
 
-	if len(target.Password) != 0 {
-		target.Password, err = utils.ReversibleDecrypt(target.Password, t.secretKey)
-		if err != nil {
-			log.Errorf("failed to decrypt password: %v", err)
-			t.CustomAbort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+	policies, err := dao.GetRepPolicyByTarget(id)
+	if err != nil {
+		log.Errorf("failed to get policies according target %d: %v", id, err)
+		t.CustomAbort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+	}
+
+	hasEnabledPolicy := false
+	for _, policy := range policies {
+		if policy.Enabled == 1 {
+			hasEnabledPolicy = true
+			break
 		}
 	}
 
-	req := struct {
-		Name     *string `json:"name"`
-		Endpoint *string `json:"endpoint"`
-		Username *string `json:"username"`
-		Password *string `json:"password"`
-		Insecure *bool   `json:"insecure"`
-	}{}
-	t.DecodeJSONReq(&req)
-
-	originalName := target.Name
-	originalURL := target.URL
-
-	if req.Name != nil {
-		target.Name = *req.Name
-	}
-	if req.Endpoint != nil {
-		target.URL = *req.Endpoint
-	}
-	if req.Username != nil {
-		target.Username = *req.Username
-	}
-	if req.Password != nil {
-		target.Password = *req.Password
-	}
-	if req.Insecure != nil {
-		target.Insecure = *req.Insecure
+	if hasEnabledPolicy {
+		t.CustomAbort(http.StatusBadRequest, "the target is associated with policy which is enabled")
 	}
 
-	t.Validate(target)
+	target := &models.RepTarget{}
+	t.DecodeJSONReqAndValidate(target)
 
-	if target.Name != originalName {
+	if target.Name != originalTarget.Name {
 		ta, err := dao.GetRepTargetByName(target.Name)
 		if err != nil {
 			log.Errorf("failed to get target %s: %v", target.Name, err)
@@ -268,7 +269,7 @@ func (t *TargetAPI) Put() {
 		}
 	}
 
-	if target.URL != originalURL {
+	if target.URL != originalTarget.URL {
 		ta, err := dao.GetRepTargetByEndpoint(target.URL)
 		if err != nil {
 			log.Errorf("failed to get target [ %s ]: %v", target.URL, err)
@@ -279,6 +280,8 @@ func (t *TargetAPI) Put() {
 			t.CustomAbort(http.StatusConflict, fmt.Sprintf("the target whose endpoint is %s already exists", target.URL))
 		}
 	}
+
+	target.ID = id
 
 	if len(target.Password) != 0 {
 		target.Password, err = utils.ReversibleEncrypt(target.Password, t.secretKey)
@@ -315,7 +318,7 @@ func (t *TargetAPI) Delete() {
 	}
 
 	if len(policies) > 0 {
-		t.CustomAbort(http.StatusPreconditionFailed, "the target is used by policies, can not be deleted")
+		t.CustomAbort(http.StatusBadRequest, "the target is used by policies, can not be deleted")
 	}
 
 	if err = dao.DeleteRepTarget(id); err != nil {
@@ -324,15 +327,21 @@ func (t *TargetAPI) Delete() {
 	}
 }
 
-func newRegistryClient(endpoint string, insecure bool, username, password string) (*registry.Registry, error) {
-	transport := registry.GetHTTPTransport(insecure)
+func newRegistryClient(endpoint string, insecure bool, username, password, scopeType, scopeName string,
+	scopeActions ...string) (*registry.Registry, error) {
 	credential := auth.NewBasicAuthCredential(username, password)
-	authorizer := auth.NewStandardTokenAuthorizer(&http.Client{
-		Transport: transport,
-	}, credential)
-	return registry.NewRegistry(endpoint, &http.Client{
-		Transport: registry.NewTransport(transport, authorizer),
-	})
+	authorizer := auth.NewStandardTokenAuthorizer(credential, insecure, scopeType, scopeName, scopeActions...)
+
+	store, err := auth.NewAuthorizerStore(endpoint, insecure, authorizer)
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := registry.NewRegistryWithModifiers(endpoint, insecure, store)
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
 }
 
 // ListPolicies ...

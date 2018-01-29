@@ -49,28 +49,14 @@ note() { printf "\n${underline}${bold}${blue}Note:${reset} ${blue}%s${reset}\n" 
 set -e
 set +o noglob
 
-usage=$'Please set hostname and other necessary attributes in harbor.cfg first. DO NOT use localhost or 127.0.0.1 for hostname, because Harbor needs to be accessed by external clients.
-Please set --with-notary if needs enable Notary in Harbor, and set ui_url_protocol/ssl_cert/ssl_cert_key in harbor.cfg bacause notary must run under https. 
-Please set --with-clair if needs enable Clair in Harbor'
+usage=$'Please set hostname and other necessary attributes in harbor.cfg first. DO NOT use localhost or 127.0.0.1 for hostname, because Harbor needs to be accessed by external clients.'
 item=0
 
-# notary is not enabled by default
-with_notary=$false
-# clair is not enabled by default
-with_clair=$false
-# HA mode is not enabled by default
-harbor_ha=$false
 while [ $# -gt 0 ]; do
         case $1 in
             --help)
             note "$usage"
             exit 0;;
-            --with-notary)
-            with_notary=true;;
-            --with-clair)
-            with_clair=true;;
-            --ha)
-            harbor_ha=true;;
             *)
             note "$usage"
             exit 1;;
@@ -148,10 +134,10 @@ h2 "[Step $item]: checking installation environment ..."; let item+=1
 check_docker
 check_dockercompose
 
-if [ -f harbor*.tar.gz ]
+if [ -f harbor*.tgz ]
 then
 	h2 "[Step $item]: loading Harbor images ..."; let item+=1
-	docker load -i ./harbor*.tar.gz
+	docker load -i ./harbor*.tgz
 fi
 echo ""
 
@@ -160,49 +146,19 @@ if [ -n "$host" ]
 then
 	sed "s/^hostname = .*/hostname = $host/g" -i ./harbor.cfg
 fi
-prepare_para=
-if [ $with_notary ] && [ ! $harbor_ha ]
-then
-	prepare_para="${prepare_para} --with-notary"
-fi
-if [ $with_clair ]
-then
-	prepare_para="${prepare_para} --with-clair"
-fi
-if [ $harbor_ha ]
-then
-    prepare_para="${prepare_para} --ha"
-fi
-./prepare $prepare_para
+./prepare
 echo ""
 
 h2 "[Step $item]: checking existing instance of Harbor ..."; let item+=1
-docker_compose_list='-f docker-compose.yml'
-if [ $with_notary ] && [ ! $harbor_ha ]
+if [ -n "$(docker-compose -f docker-compose*.yml ps -q)"  ]
 then
-	docker_compose_list="${docker_compose_list} -f docker-compose.notary.yml"
-fi
-if [ $with_clair ]
-then
-	docker_compose_list="${docker_compose_list} -f docker-compose.clair.yml"
-fi
-
-if [ -n "$(docker-compose $docker_compose_list ps -q)"  ]
-then
-	note "stopping existing Harbor instance ..." 
-	docker-compose $docker_compose_list down -v
+	note "stopping existing Harbor instance ..."
+	docker-compose -f docker-compose*.yml down
 fi
 echo ""
 
 h2 "[Step $item]: starting Harbor ..."
-if [ $harbor_ha ]
-then
-    mv docker-compose.yml docker-compose.yml.bak 
-    cp ha/docker-compose.yml docker-compose.yml
-    mv docker-compose.clair.yml docker-compose.clair.yml.bak
-    cp ha/docker-compose.clair.yml docker-compose.clair.yml
-fi
-docker-compose $docker_compose_list up -d
+docker-compose -f docker-compose*.yml up -d
 
 protocol=http
 hostname=reg.mydomain.com

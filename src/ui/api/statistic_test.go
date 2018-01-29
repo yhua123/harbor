@@ -1,16 +1,3 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 package api
 
 import (
@@ -30,7 +17,7 @@ func TestStatisticGet(t *testing.T) {
 
 	//prepare for test
 
-	var privateProjectCount, privateRepoCount int32
+	var priMyProjectCount, priMyRepoCount int32
 	var priPublicProjectCount, priPublicRepoCount int32
 	var priTotalProjectCount, priTotalRepoCount int32
 
@@ -53,8 +40,8 @@ func TestStatisticGet(t *testing.T) {
 	} else {
 		assert.Equal(httpStatusCode, int(200), "Case 2: Get status info with admin login. (200)")
 		//fmt.Println("pri status data %+v", result)
-		privateProjectCount = result.PrivateProjectCount
-		privateRepoCount = result.PrivateRepoCount
+		priMyProjectCount = result.MyProjectCount
+		priMyRepoCount = result.MyRepoCount
 		priPublicProjectCount = result.PublicProjectCount
 		priPublicRepoCount = result.PublicRepoCount
 		priTotalProjectCount = result.TotalProjectCount
@@ -74,8 +61,8 @@ func TestStatisticGet(t *testing.T) {
 		t.Error("Error while get statistic information", err.Error())
 		t.Log(err)
 	} else {
-		assert.Equal(privateProjectCount+1, result.PrivateProjectCount, "PrivateProjectCount should be +1")
-		assert.Equal(privateRepoCount, result.PrivateRepoCount)
+		assert.Equal(priMyProjectCount+1, result.MyProjectCount, "MyProjectCount should be +1")
+		assert.Equal(priMyRepoCount+1, result.MyRepoCount, "MyRepoCount should be +1")
 		assert.Equal(priPublicProjectCount, result.PublicProjectCount, "PublicProjectCount should be equal")
 		assert.Equal(priPublicRepoCount+1, result.PublicRepoCount, "PublicRepoCount should be +1")
 		assert.Equal(priTotalProjectCount+1, result.TotalProjectCount, "TotalProCount should be +1")

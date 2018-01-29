@@ -8,6 +8,8 @@ fi
 
 source ./alembic.tpl > ./alembic.ini
 
+WAITTIME=60
+
 DBCNF="-hlocalhost -u${DB_USR}"
 
 #prevent shell to print insecure message
@@ -29,7 +31,7 @@ if [[ ( $1 = "up" || $1 = "upgrade" ) && ${SKIP_CONFIRM} != "y" ]]; then
     case $ans in
         [Yy]* )
             ;;
-        [Nn]* )
+        [Nn]* ) 
             exit 0
             ;;
         * ) echo "illegal answer: $ans. Upgrade abort!!"
@@ -40,23 +42,26 @@ if [[ ( $1 = "up" || $1 = "upgrade" ) && ${SKIP_CONFIRM} != "y" ]]; then
 fi
 
 echo 'Trying to start mysql server...'
-chown -R 10000:10000 /var/lib/mysql
+DBRUN=0
 mysqld &
-for i in {60..0}; do
-    mysqladmin -u$DB_USR -p$DB_PWD processlist >/dev/null 2>&1
-    if [ $? = 0 ]; then
+for i in $(seq 1 $WAITTIME); do
+    echo "$(/usr/sbin/service mysql status)"
+    if [[ "$(/usr/sbin/service mysql status)" =~ "not running" ]]; then
+        sleep 1
+    else
+        DBRUN=1
         break
     fi
-    echo 'Waiting for MySQL start...'
-    sleep 1
 done
-if [ "$i" = 0 ]; then
+
+if [[ $DBRUN -eq 0  ]]; then
     echo "timeout. Can't run mysql server."
     if [[ $1 = "test" ]]; then
         echo "test failed."
     fi
     exit 1
 fi
+
 if [[ $1 = "test" ]]; then
     echo "test passed."
     exit 0
@@ -84,34 +89,13 @@ up|upgrade)
             mysql $DBCNF -e "insert into registry.alembic_version values ('0.1.1')"
         fi
     fi
-    alembic -c ./alembic.ini current
     alembic -c ./alembic.ini upgrade ${VERSION}
-    rc="$?"
-    alembic -c ./alembic.ini current	
     echo "Upgrade performed."
-    echo $rc
-    exit $rc	
     ;;
 backup)
     echo "Performing backup..."
     mysqldump $DBCNF --add-drop-database --databases registry > ./backup/registry.sql
     echo "Backup performed."
-    ;;
-export)
-    echo "Performing export..."
-    ./export --dbuser ${DB_USR} --dbpwd ${DB_PWD} --exportpath ${EXPORTPATH}
-    rc="$?"
-    echo "Export performed."
-    echo $rc
-    exit $rc
-    ;;
-mapprojects)
-    echo "Performing map projects..."
-    ./mapprojects --dbuser ${DB_USR} --dbpwd ${DB_PWD} --mapprojectsfile ${MAPPROJECTFILE}
-    rc="$?"
-    echo "Map projects performed."
-    echo $rc
-    exit $rc
     ;;
 restore)
     echo "Performing restore..."

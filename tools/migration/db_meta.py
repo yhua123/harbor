@@ -6,18 +6,16 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.dialects import mysql
 
-
 Base = declarative_base()
-
 
 class User(Base):
     __tablename__ = 'user'
 
     user_id = sa.Column(sa.Integer, primary_key=True)
-    username = sa.Column(sa.String(255), unique=True)
-    email = sa.Column(sa.String(255), unique=True)
+    username = sa.Column(sa.String(15), unique=True)
+    email = sa.Column(sa.String(30), unique=True)
     password = sa.Column(sa.String(40), nullable=False)
-    realname = sa.Column(sa.String(255), nullable=False)
+    realname = sa.Column(sa.String(20), nullable=False)
     comment = sa.Column(sa.String(30))
     deleted = sa.Column(sa.Integer, nullable=False, server_default=sa.text("'0'"))
     reset_uuid = sa.Column(sa.String(40))
@@ -26,14 +24,11 @@ class User(Base):
     creation_time = sa.Column(mysql.TIMESTAMP)
     update_time = sa.Column(mysql.TIMESTAMP)
 
-
 class Properties(Base):
     __tablename__ = 'properties'
 
-    id = sa.Column(sa.Integer, primary_key=True)
-    k = sa.Column(sa.String(64), unique=True)
+    k = sa.Column(sa.String(64), primary_key = True)
     v = sa.Column(sa.String(128), nullable = False)
-
 
 class ProjectMember(Base):
     __tablename__ = 'project_member'
@@ -47,7 +42,6 @@ class ProjectMember(Base):
     sa.ForeignKeyConstraint(['role'], [u'role.role_id'], ),
     sa.ForeignKeyConstraint(['user_id'], [u'user.user_id'], ),
 
-
 class UserProjectRole(Base):
     __tablename__ = 'user_project_role'
 
@@ -55,7 +49,6 @@ class UserProjectRole(Base):
     user_id = sa.Column(sa.Integer(), sa.ForeignKey('user.user_id'))
     pr_id = sa.Column(sa.Integer(), sa.ForeignKey('project_role.pr_id'))
     project_role = relationship("ProjectRole")
-
 
 class ProjectRole(Base):
     __tablename__ = 'project_role'
@@ -66,14 +59,12 @@ class ProjectRole(Base):
     sa.ForeignKeyConstraint(['role_id'], [u'role.role_id'])
     sa.ForeignKeyConstraint(['project_id'], [u'project.project_id'])
 
-
 class Access(Base):
     __tablename__ = 'access'
 
     access_id = sa.Column(sa.Integer(), primary_key = True)
     access_code = sa.Column(sa.String(1))
     comment = sa.Column(sa.String(30))
-
 
 class Role(Base):
     __tablename__ = 'role'
@@ -83,32 +74,17 @@ class Role(Base):
     role_code = sa.Column(sa.String(20))
     name = sa.Column(sa.String(20))
 
-
 class Project(Base):
     __tablename__ = 'project'
 
     project_id = sa.Column(sa.Integer, primary_key=True)
     owner_id = sa.Column(sa.ForeignKey(u'user.user_id'), nullable=False, index=True)
-    name = sa.Column(sa.String(255), nullable=False, unique=True)
+    name = sa.Column(sa.String(30), nullable=False, unique=True)
     creation_time = sa.Column(mysql.TIMESTAMP)
     update_time = sa.Column(mysql.TIMESTAMP)
     deleted = sa.Column(sa.Integer, nullable=False, server_default=sa.text("'0'"))
+    public = sa.Column(sa.Integer, nullable=False, server_default=sa.text("'0'"))
     owner = relationship(u'User')
-
-
-class ProjectMetadata(Base):
-    __tablename__ = 'project_metadata'
-
-    id = sa.Column(sa.Integer, primary_key=True)
-    project_id = sa.Column(sa.ForeignKey(u'project.project_id'), nullable=False)
-    name = sa.Column(sa.String(255), nullable=False)
-    value = sa.Column(sa.String(255))
-    creation_time = sa.Column(mysql.TIMESTAMP, server_default=sa.text("CURRENT_TIMESTAMP"))
-    update_time = sa.Column(mysql.TIMESTAMP, server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
-    deleted = sa.Column(mysql.TINYINT(1), nullable=False, server_default='0')
-
-    __table_args__ = (sa.UniqueConstraint('project_id', 'name', name='unique_project_id_and_name'),)
-
 
 class ReplicationPolicy(Base):
     __tablename__ = "replication_policy"
@@ -120,12 +96,9 @@ class ReplicationPolicy(Base):
     enabled = sa.Column(mysql.TINYINT(1), nullable=False, server_default=sa.text("'1'"))
     description = sa.Column(sa.Text)
     cron_str = sa.Column(sa.String(256))
-    filters = sa.Column(sa.String(1024))
-    replicate_deletion = sa.Column(mysql.TINYINT(1), nullable=False, server_default='0')
     start_time = sa.Column(mysql.TIMESTAMP)
     creation_time = sa.Column(mysql.TIMESTAMP, server_default = sa.text("CURRENT_TIMESTAMP"))
     update_time = sa.Column(mysql.TIMESTAMP, server_default = sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
-
 
 class ReplicationTarget(Base):
     __tablename__ = "replication_target"
@@ -133,13 +106,11 @@ class ReplicationTarget(Base):
     id = sa.Column(sa.Integer, primary_key=True)
     name = sa.Column(sa.String(64))
     url = sa.Column(sa.String(64))
-    username = sa.Column(sa.String(255))
+    username = sa.Column(sa.String(40))
     password = sa.Column(sa.String(40))
     target_type = sa.Column(mysql.TINYINT(1), nullable=False, server_default=sa.text("'0'"))
-    insecure = sa.Column(mysql.TINYINT(1), nullable=False, server_default='0')
     creation_time = sa.Column(mysql.TIMESTAMP, server_default = sa.text("CURRENT_TIMESTAMP"))
     update_time = sa.Column(mysql.TIMESTAMP, server_default = sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
-
 
 class ReplicationJob(Base):
     __tablename__ = "replication_job"
@@ -152,21 +123,8 @@ class ReplicationJob(Base):
     tags = sa.Column(sa.String(16384))
     creation_time = sa.Column(mysql.TIMESTAMP, server_default = sa.text("CURRENT_TIMESTAMP"))
     update_time = sa.Column(mysql.TIMESTAMP, server_default = sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
-
-    __table_args__ = (sa.Index('policy', 'policy_id'),)
-
-
-class ReplicationImmediateTrigger(Base):
-    __tablename__ = 'replication_immediate_trigger'
-
-    id = sa.Column(sa.Integer, primary_key=True)
-    policy_id = sa.Column(sa.Integer, nullable=False)
-    namespace = sa.Column(sa.String(256), nullable=False)
-    on_push = sa.Column(mysql.TINYINT(1), nullable=False, server_default='0')
-    on_deletion = sa.Column(mysql.TINYINT(1), nullable=False, server_default='0')
-    creation_time = sa.Column(mysql.TIMESTAMP, server_default=sa.text("CURRENT_TIMESTAMP"))
-    update_time = sa.Column(mysql.TIMESTAMP, server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
-
+    
+    __table_args__ = (sa.Index('policy', "policy_id"),)
 
 class Repository(Base):
     __tablename__ = "repository"
@@ -182,51 +140,3 @@ class Repository(Base):
     update_time = sa.Column(mysql.TIMESTAMP, server_default = sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
 
 
-class AccessLog(Base):
-    __tablename__ = "access_log"
-
-    user_id = sa.Column(sa.Integer, nullable=False)
-    log_id = sa.Column(sa.Integer, primary_key=True)
-    username = sa.Column(sa.String(255), nullable=False)
-    project_id = sa.Column(sa.Integer, nullable=False)
-    repo_name = sa.Column(sa.String(256))
-    repo_tag = sa.Column(sa.String(128))
-    GUID = sa.Column(sa.String(64))
-    operation = sa.Column(sa.String(20))
-    op_time = sa.Column(mysql.TIMESTAMP)
-    update_time = sa.Column(mysql.TIMESTAMP, server_default = sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
-
-    __table_args__ = (sa.Index('project_id', "op_time"),)
-
-
-class ImageScanJob(Base):
-    __tablename__ = "img_scan_job"
-
-    id = sa.Column(sa.Integer, nullable=False, primary_key=True)
-    status = sa.Column(sa.String(64), nullable=False)
-    repository = sa.Column(sa.String(256), nullable=False)
-    tag = sa.Column(sa.String(128), nullable=False)
-    digest = sa.Column(sa.String(128))
-    creation_time = sa.Column(mysql.TIMESTAMP, server_default = sa.text("CURRENT_TIMESTAMP"))
-    update_time = sa.Column(mysql.TIMESTAMP, server_default = sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
-
-
-class ImageScanOverview(Base):
-    __tablename__ = "img_scan_overview"
-
-    id = sa.Column(sa.Integer, nullable=False, primary_key=True)
-    image_digest = sa.Column(sa.String(128), nullable=False)
-    scan_job_id = sa.Column(sa.Integer, nullable=False)
-    severity = sa.Column(sa.Integer, nullable=False, server_default=sa.text("'0'"))
-    components_overview = sa.Column(sa.String(2048))
-    details_key = sa.Column(sa.String(128))
-    creation_time = sa.Column(mysql.TIMESTAMP, server_default = sa.text("CURRENT_TIMESTAMP"))
-    update_time = sa.Column(mysql.TIMESTAMP, server_default = sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
-
-
-class ClairVulnTimestamp(Base):
-    __tablename__ = "clair_vuln_timestamp"
-
-    id = sa.Column(sa.Integer, nullable=False, primary_key=True)
-    namespace = sa.Column(sa.String(128), nullable=False, unique=True)
-    last_update = sa.Column(mysql.TIMESTAMP)

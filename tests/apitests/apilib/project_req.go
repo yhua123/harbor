@@ -23,8 +23,10 @@
 package apilib
 
 type ProjectReq struct {
+
 	// The name of the project.
 	ProjectName string `json:"project_name,omitempty"`
-	// The metadata of the project.
-	Metadata map[string]string `json:"metadata,omitempty"`
+
+	// The public status of the project.
+	Public int32 `json:"public,omitempty"`
 }

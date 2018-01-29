@@ -1,18 +1,20 @@
-FROM vmware/photon:1.0
+FROM library/photon:1.0
 
-RUN tdnf distro-sync -y || echo \
-    && tdnf erase vim -y \
-    && tdnf install sudo -y \
-    && tdnf clean all \
-    && groupadd -r -g 10000 harbor && useradd --no-log-init -r -g 10000 -u 10000 harbor \
-    && mkdir /harbor/
+RUN mkdir /harbor/
+RUN tdnf install -y sed apr-util-ldap
 
-HEALTHCHECK CMD curl -s -o /dev/null -w "%{http_code}" 127.0.0.1:8080/api/systeminfo|grep 200
-COPY ./make/dev/ui/harbor_ui ./src/favicon.ico ./make/photon/ui/start.sh ./VERSION /harbor/
+COPY ./make/dev/ui/harbor_ui /harbor/
+
 COPY ./src/ui/views /harbor/views
 COPY ./src/ui/static /harbor/static
+COPY ./src/favicon.ico /harbor/favicon.ico
+COPY ./make/jsminify.sh /tmp/jsminify.sh
 
-RUN chmod u+x /harbor/start.sh /harbor/harbor_ui
-WORKDIR /harbor/
+RUN chmod u+x /harbor/harbor_ui \
+    && timestamp=`date '+%s'` \
+    && /tmp/jsminify.sh /harbor/views/sections/script-include.htm /harbor/static/resources/js/harbor.app.min.$timestamp.js /harbor/ \
+    && sed -i "s/harbor\.app\.min\.js/harbor\.app\.min\.$timestamp\.js/g" /harbor/views/sections/script-min-include.htm \
+    && echo "TLS_REQCERT allow" >> /etc/openldap/ldap.conf
 	
-ENTRYPOINT ["/harbor/start.sh"]
+WORKDIR /harbor/
+ENTRYPOINT ["/harbor/harbor_ui"]

@@ -15,7 +15,7 @@
 <!DOCTYPE html>
 <html>
   <body>
-    <p>Please click this link to reset your password:</p>
+    <p>{{.Hint}}:</p>
     <a href="{{.URL}}/reset_password?reset_uuid={{.UUID}}">{{.URL}}/reset_password?reset_uuid={{.UUID}}</a>
   </body>
 </html>

@@ -1,16 +1,17 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+   Copyright (c) 2016 VMware, Inc. All Rights Reserved.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
 
 package replication
 
@@ -22,19 +23,16 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/manifest/schema1"
 	"github.com/docker/distribution/manifest/schema2"
+	"github.com/vmware/harbor/src/common/dao"
 	"github.com/vmware/harbor/src/common/models"
-	comutils "github.com/vmware/harbor/src/common/utils"
 	"github.com/vmware/harbor/src/common/utils/log"
 	"github.com/vmware/harbor/src/common/utils/registry"
 	"github.com/vmware/harbor/src/common/utils/registry/auth"
-	"github.com/vmware/harbor/src/jobservice/config"
-	"github.com/vmware/harbor/src/jobservice/utils"
 )
 
 const (
@@ -99,7 +97,7 @@ func InitBaseHandler(repository, srcURL, srcSecret,
 		logger:         logger,
 	}
 
-	base.project, _ = comutils.ParseRepository(base.repository)
+	base.project = getProjectName(base.repository)
 
 	return base
 }
@@ -107,6 +105,12 @@ func InitBaseHandler(repository, srcURL, srcSecret,
 // Exit ...
 func (b *BaseHandler) Exit() error {
 	return nil
+}
+
+func getProjectName(repository string) string {
+	repository = strings.TrimSpace(repository)
+	repository = strings.TrimRight(repository, "/")
+	return repository[:strings.LastIndex(repository, "/")]
 }
 
 // Initializer creates clients for source and destination registry,
@@ -132,8 +136,8 @@ func (i *Initializer) Enter() (string, error) {
 func (i *Initializer) enter() (string, error) {
 	c := &http.Cookie{Name: models.UISecretCookie, Value: i.srcSecret}
 	srcCred := auth.NewCookieCredential(c)
-	srcClient, err := utils.NewRepositoryClient(i.srcURL, i.insecure, srcCred,
-		config.InternalTokenServiceEndpoint(), i.repository)
+	srcClient, err := newRepositoryClient(i.srcURL, i.insecure, srcCred,
+		i.repository, "repository", i.repository, "pull", "push", "*")
 	if err != nil {
 		i.logger.Errorf("an error occurred while creating source repository client: %v", err)
 		return "", err
@@ -141,8 +145,8 @@ func (i *Initializer) enter() (string, error) {
 	i.srcClient = srcClient
 
 	dstCred := auth.NewBasicAuthCredential(i.dstUsr, i.dstPwd)
-	dstClient, err := utils.NewRepositoryClient(i.dstURL, i.insecure, dstCred,
-		"", i.repository)
+	dstClient, err := newRepositoryClient(i.dstURL, i.insecure, dstCred,
+		i.repository, "repository", i.repository, "pull", "push", "*")
 	if err != nil {
 		i.logger.Errorf("an error occurred while creating destination repository client: %v", err)
 		return "", err
@@ -182,13 +186,13 @@ func (c *Checker) Enter() (string, error) {
 }
 
 func (c *Checker) enter() (string, error) {
-	project, err := getProject(c.project)
+	project, err := dao.GetProjectByName(c.project)
 	if err != nil {
-		c.logger.Errorf("failed to get project %s from %s: %v", c.project, c.srcURL, err)
+		c.logger.Errorf("an error occurred while getting project %s in DB: %v", c.project, err)
 		return "", err
 	}
 
-	err = c.createProject(project)
+	err = c.createProject(project.Public)
 	if err == nil {
 		c.logger.Infof("project %s is created on %s with user %s", c.project, c.dstURL, c.dstUsr)
 		return StatePullManifest, nil
@@ -207,78 +211,16 @@ func (c *Checker) enter() (string, error) {
 	return "", err
 }
 
-func getProject(name string) (*models.Project, error) {
-	req, err := http.NewRequest(http.MethodGet, buildProjectURL(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	q := req.URL.Query()
-	q.Set("name", name)
-	req.URL.RawQuery = q.Encode()
-
-	req.AddCookie(&http.Cookie{
-		Name:  models.UISecretCookie,
-		Value: config.JobserviceSecret(),
-	})
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	data, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get project %s: %d %s",
-			name, resp.StatusCode, string(data))
-	}
-
-	list := []*models.Project{}
-	if err = json.Unmarshal(data, &list); err != nil {
-		return nil, err
-	}
-
-	var project *models.Project
-	for _, p := range list {
-		if p.Name == name {
-			project = p
-			break
-		}
-	}
-	if project == nil {
-		return nil, fmt.Errorf("project %s not found", name)
-	}
-
-	return project, nil
-}
-
-func (c *Checker) createProject(project *models.Project) error {
-	// only replicate the public property of project
-	pro := struct {
-		models.ProjectRequest
-		Public int `json:"public"`
+func (c *Checker) createProject(public int) error {
+	project := struct {
+		ProjectName string `json:"project_name"`
+		Public      int    `json:"public"`
 	}{
-		ProjectRequest: models.ProjectRequest{
-			Name: project.Name,
-			Metadata: map[string]string{
-				models.ProMetaPublic: strconv.FormatBool(project.IsPublic()),
-			},
-		},
+		ProjectName: c.project,
+		Public:      public,
 	}
 
-	// put "public" property in both metadata and public field to keep compatibility
-	// with old version API(<=1.2.0)
-	if project.IsPublic() {
-		pro.Public = 1
-	}
-
-	data, err := json.Marshal(pro)
+	data, err := json.Marshal(project)
 	if err != nil {
 		return err
 	}
@@ -290,7 +232,6 @@ func (c *Checker) createProject(project *models.Project) error {
 	}
 
 	req.SetBasicAuth(c.dstUsr, c.dstPwd)
-	req.Header.Set(http.CanonicalHeaderKey("content-type"), "application/json")
 
 	client := &http.Client{
 		Transport: &http.Transport{
@@ -324,10 +265,6 @@ func (c *Checker) createProject(project *models.Project) error {
 
 	return fmt.Errorf("failed to create project %s on %s with user %s: %d %s",
 		c.project, c.dstURL, c.dstUsr, resp.StatusCode, string(message))
-}
-
-func buildProjectURL() string {
-	return strings.TrimRight(config.LocalUIURL(), "/") + "/api/projects"
 }
 
 // ManifestPuller pulls the manifest of a tag. And if no tag needs to be pulled,
@@ -383,6 +320,12 @@ func (m *ManifestPuller) enter() (string, error) {
 
 	for _, discriptor := range manifest.References() {
 		blobs = append(blobs, discriptor.Digest.String())
+	}
+
+	// config is also need to be transferred if the schema of manifest is v2
+	manifest2, ok := manifest.(*schema2.DeserializedManifest)
+	if ok {
+		blobs = append(blobs, manifest2.Target().Digest.String())
 	}
 
 	m.logger.Infof("all blobs of %s:%s from %s: %v", name, tag, m.srcURL, blobs)
@@ -512,4 +455,35 @@ func (m *ManifestPusher) enter() (string, error) {
 	m.blobs = nil
 
 	return StatePullManifest, nil
+}
+
+func newRepositoryClient(endpoint string, insecure bool, credential auth.Credential, repository, scopeType, scopeName string,
+	scopeActions ...string) (*registry.Repository, error) {
+
+	authorizer := auth.NewStandardTokenAuthorizer(credential, insecure, scopeType, scopeName, scopeActions...)
+
+	store, err := auth.NewAuthorizerStore(endpoint, insecure, authorizer)
+	if err != nil {
+		return nil, err
+	}
+
+	uam := &userAgentModifier{
+		userAgent: "harbor-registry-client",
+	}
+
+	client, err := registry.NewRepositoryWithModifiers(repository, endpoint, insecure, store, uam)
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
+type userAgentModifier struct {
+	userAgent string
+}
+
+// Modify adds user-agent header to the request
+func (u *userAgentModifier) Modify(req *http.Request) error {
+	req.Header.Set(http.CanonicalHeaderKey("User-Agent"), u.userAgent)
+	return nil
 }

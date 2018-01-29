@@ -1,16 +1,17 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+   Copyright (c) 2016 VMware, Inc. All Rights Reserved.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
 
 package api
 
@@ -19,20 +20,23 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/http/httputil"
 	"strconv"
 
+	"github.com/vmware/harbor/src/common/api"
 	"github.com/vmware/harbor/src/common/dao"
+	"github.com/vmware/harbor/src/jobservice/job"
+	"github.com/vmware/harbor/src/jobservice/config"
+	"github.com/vmware/harbor/src/jobservice/utils"
 	"github.com/vmware/harbor/src/common/models"
 	u "github.com/vmware/harbor/src/common/utils"
 	"github.com/vmware/harbor/src/common/utils/log"
-	"github.com/vmware/harbor/src/jobservice/config"
-	"github.com/vmware/harbor/src/jobservice/job"
 )
 
 // ReplicationJob handles /api/replicationJobs /api/replicationJobs/:id/log
 // /api/replicationJobs/actions
 type ReplicationJob struct {
-	jobBaseAPI
+	api.BaseAPI
 }
 
 // ReplicationReq holds informations of request for /api/replicationJobs
@@ -46,6 +50,22 @@ type ReplicationReq struct {
 // Prepare ...
 func (rj *ReplicationJob) Prepare() {
 	rj.authenticate()
+}
+
+func (rj *ReplicationJob) authenticate() {
+	cookie, err := rj.Ctx.Request.Cookie(models.UISecretCookie)
+	if err != nil && err != http.ErrNoCookie {
+		log.Errorf("failed to get cookie %s: %v", models.UISecretCookie, err)
+		rj.CustomAbort(http.StatusInternalServerError, "")
+	}
+
+	if err == http.ErrNoCookie {
+		rj.CustomAbort(http.StatusUnauthorized, "")
+	}
+
+	if cookie.Value != config.UISecret() {
+		rj.CustomAbort(http.StatusForbidden, "")
+	}
 }
 
 // Post creates replication jobs according to the policy.
@@ -108,10 +128,8 @@ func (rj *ReplicationJob) addJob(repo string, policyID int64, operation string, 
 	if err != nil {
 		return err
 	}
-	repJob := job.NewRepJob(id)
-
 	log.Debugf("Send job to scheduler, job id: %d", id)
-	job.Schedule(repJob)
+	job.Schedule(id)
 	return nil
 }
 
@@ -137,36 +155,11 @@ func (rj *ReplicationJob) HandleAction() {
 		rj.RenderError(http.StatusInternalServerError, "Faild to get jobs to stop")
 		return
 	}
-
-	runningJobs := []*models.RepJob{}
-	pendingAndRetryingJobs := []*models.RepJob{}
-	for _, job := range jobs {
-		if job.Status == models.JobRunning {
-			runningJobs = append(runningJobs, job)
-			continue
-		}
-		pendingAndRetryingJobs = append(pendingAndRetryingJobs, job)
+	var jobIDList []int64
+	for _, j := range jobs {
+		jobIDList = append(jobIDList, j.ID)
 	}
-
-	// stop pending and retrying jobs by updating job status in database
-	// when the jobs are dispatched, the status will be checked first
-	for _, job := range pendingAndRetryingJobs {
-		id := job.ID
-		if err := dao.UpdateRepJobStatus(id, models.JobStopped); err != nil {
-			log.Errorf("failed to update the status of job %d: %v", id, err)
-			continue
-		}
-		log.Debugf("the status of job %d is updated to %s", id, models.JobStopped)
-	}
-
-	// stop running jobs in statemachine
-	var repJobs []job.Job
-	for _, j := range runningJobs {
-		//transform the data record to job struct that can be handled by state machine.
-		repJob := job.NewRepJob(j.ID)
-		repJobs = append(repJobs, repJob)
-	}
-	job.WorkerPools[job.ReplicationType].StopJobs(repJobs)
+	job.WorkerPool.StopJobs(jobIDList)
 }
 
 // GetLog gets logs of the job
@@ -178,8 +171,7 @@ func (rj *ReplicationJob) GetLog() {
 		rj.RenderError(http.StatusBadRequest, "Invalid job id")
 		return
 	}
-	repJob := job.NewRepJob(jid)
-	logFile := repJob.LogPath()
+	logFile := utils.GetJobLogPath(jid)
 	rj.Ctx.Output.Download(logFile)
 }
 
@@ -195,7 +187,9 @@ func getRepoList(projectID int64) ([]string, error) {
 		if err != nil {
 			return repositories, err
 		}
-		req.AddCookie(&http.Cookie{Name: models.UISecretCookie, Value: config.JobserviceSecret()})
+
+		req.AddCookie(&http.Cookie{Name: models.UISecretCookie, Value: config.UISecret()})
+
 		resp, err := client.Do(req)
 		if err != nil {
 			return repositories, err
@@ -203,13 +197,9 @@ func getRepoList(projectID int64) ([]string, error) {
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			b, err := ioutil.ReadAll(resp.Body)
-			if err != nil {
-				return repositories, err
-			}
-			return repositories,
-				fmt.Errorf("failed to get repo list, response code: %d, error: %s",
-					resp.StatusCode, string(b))
+			dump, _ := httputil.DumpResponse(resp, true)
+			log.Debugf("response: %q", dump)
+			return repositories, fmt.Errorf("Unexpected status code when getting repository list: %d", resp.StatusCode)
 		}
 
 		body, err := ioutil.ReadAll(resp.Body)
@@ -217,15 +207,12 @@ func getRepoList(projectID int64) ([]string, error) {
 			return repositories, err
 		}
 
-		var list []*struct {
-			Name string `json:"name"`
-		}
+		var list []string
 		if err = json.Unmarshal(body, &list); err != nil {
 			return repositories, err
 		}
-		for _, repo := range list {
-			repositories = append(repositories, repo.Name)
-		}
+
+		repositories = append(repositories, list...)
 
 		links := u.ParseLink(resp.Header.Get(http.CanonicalHeaderKey("link")))
 		next = links.Next()

@@ -1,16 +1,17 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+   Copyright (c) 2016 VMware, Inc. All Rights Reserved.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
 
 package dao
 
@@ -20,9 +21,6 @@ import (
 	"time"
 
 	"github.com/astaxie/beego/orm"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"github.com/vmware/harbor/src/common"
 	"github.com/vmware/harbor/src/common/models"
 	"github.com/vmware/harbor/src/common/utils"
 	"github.com/vmware/harbor/src/common/utils/log"
@@ -41,10 +39,10 @@ func execUpdate(o orm.Ormer, sql string, params ...interface{}) error {
 	return nil
 }
 
-func cleanByUser(username string) {
+func clearUp(username string) {
 	var err error
 
-	o := GetOrmer()
+	o := orm.NewOrm()
 	o.Begin()
 
 	err = execUpdate(o, `delete 
@@ -73,8 +71,11 @@ func cleanByUser(username string) {
 
 	err = execUpdate(o, `delete 
 		from access_log 
-		where username = ?
-		`, username)
+		where user_id = (
+			select user_id
+			from user
+			where username = ?
+		)`, username)
 	if err != nil {
 		o.Rollback()
 		log.Error(err)
@@ -141,13 +142,12 @@ func TestMain(m *testing.M) {
 		result := 1
 		switch database {
 		case "mysql":
-			PrepareTestForMySQL()
+			result = testForMySQL(m)
 		case "sqlite":
-			PrepareTestForSQLite()
+			result = testForSQLite(m)
 		default:
 			log.Fatalf("invalid database: %s", database)
 		}
-		result = testForAll(m)
 
 		if result != 0 {
 			os.Exit(result)
@@ -155,23 +155,76 @@ func TestMain(m *testing.M) {
 	}
 }
 
-func testForAll(m *testing.M) int {
-	cleanByUser(username)
+func testForMySQL(m *testing.M) int {
+	db := os.Getenv("DATABASE")
+	defer os.Setenv("DATABASE", db)
 
-	rc := m.Run()
-	clearAll()
-	return rc
+	os.Setenv("DATABASE", "mysql")
+
+	dbHost := os.Getenv("DB_HOST")
+	if len(dbHost) == 0 {
+		log.Fatalf("environment variable DB_HOST is not set")
+	}
+	dbUser := os.Getenv("DB_USR")
+	if len(dbUser) == 0 {
+		log.Fatalf("environment variable DB_USR is not set")
+	}
+	dbPort := os.Getenv("DB_PORT")
+	if len(dbPort) == 0 {
+		log.Fatalf("environment variable DB_PORT is not set")
+	}
+	dbPassword := os.Getenv("DB_PWD")
+
+	log.Infof("DB_HOST: %s, DB_USR: %s, DB_PORT: %s, DB_PWD: %s\n", dbHost, dbUser, dbPort, dbPassword)
+
+	os.Setenv("MYSQL_HOST", dbHost)
+	os.Setenv("MYSQL_PORT", dbPort)
+	os.Setenv("MYSQL_USR", dbUser)
+	os.Setenv("MYSQL_PWD", dbPassword)
+
+	return testForAll(m)
 }
 
-func clearAll() {
-	tables := []string{"project_member",
-		"project_metadata", "access_log", "repository", "replication_policy",
-		"replication_target", "replication_job", "replication_immediate_trigger", "img_scan_job",
-		"img_scan_overview", "clair_vuln_timestamp", "project", "user"}
-	for _, t := range tables {
-		if err := ClearTable(t); err != nil {
-			log.Errorf("Failed to clear table: %s,error: %v", t, err)
-		}
+func testForSQLite(m *testing.M) int {
+	db := os.Getenv("DATABASE")
+	defer os.Setenv("DATABASE", db)
+
+	os.Setenv("DATABASE", "sqlite")
+
+	file := os.Getenv("SQLITE_FILE")
+	if len(file) == 0 {
+		os.Setenv("SQLITE_FILE", "/registry.db")
+		defer os.Setenv("SQLITE_FILE", "")
+	}
+
+	return testForAll(m)
+}
+
+func testForAll(m *testing.M) int {
+	os.Setenv("AUTH_MODE", "db_auth")
+	initDatabaseForTest()
+	clearUp(username)
+
+	return m.Run()
+}
+
+var defaultRegistered = false
+
+func initDatabaseForTest() {
+	database, err := getDatabase()
+	if err != nil {
+		panic(err)
+	}
+
+	log.Infof("initializing database: %s", database.String())
+
+	alias := database.Name()
+	if !defaultRegistered {
+		defaultRegistered = true
+		alias = "default"
+	}
+	if err := database.Register(alias); err != nil {
+		panic(err)
 	}
 }
 
@@ -320,7 +373,6 @@ var currentUser *models.User
 func TestGetUser(t *testing.T) {
 	queryUser := models.User{
 		Username: username,
-		Email:    "tester01@vmware.com",
 	}
 	var err error
 	currentUser, err = GetUser(queryUser)
@@ -333,21 +385,17 @@ func TestGetUser(t *testing.T) {
 	if currentUser.Email != "tester01@vmware.com" {
 		t.Errorf("the user's email does not match, expected: tester01@vmware.com, actual: %s", currentUser.Email)
 	}
-
-	queryUser = models.User{}
-	_, err = GetUser(queryUser)
-	assert.NotNil(t, err)
 }
 
 func TestListUsers(t *testing.T) {
-	users, err := ListUsers(nil)
+	users, err := ListUsers(models.User{})
 	if err != nil {
 		t.Errorf("Error occurred in ListUsers: %v", err)
 	}
 	if len(users) != 1 {
 		t.Errorf("Expect one user in list, but the acutal length is %d, the list: %+v", len(users), users)
 	}
-	users2, err := ListUsers(&models.UserQuery{Username: username})
+	users2, err := ListUsers(models.User{Username: username})
 	if len(users2) != 1 {
 		t.Errorf("Expect one user in list, but the acutal length is %d, the list: %+v", len(users), users)
 	}
@@ -436,6 +484,19 @@ func TestChangeUserPasswordWithIncorrectOldPassword(t *testing.T) {
 	}
 }
 
+func TestQueryRelevantProjectsWhenNoProjectAdded(t *testing.T) {
+	projects, err := SearchProjects(currentUser.UserID)
+	if err != nil {
+		t.Errorf("Error occurred in QueryRelevantProjects: %v", err)
+	}
+	if len(projects) != 1 {
+		t.Errorf("Expected only one project in DB, but actual: %d", len(projects))
+	}
+	if projects[0].Name != "library" {
+		t.Errorf("There name of the project does not match, expected: %s, actual: %s", "library", projects[0].Name)
+	}
+}
+
 func TestAddProject(t *testing.T) {
 
 	project := models.Project{
@@ -476,25 +537,11 @@ func TestGetProject(t *testing.T) {
 }
 
 func TestGetAccessLog(t *testing.T) {
-
-	accessLog := models.AccessLog{
-		Username:  currentUser.Username,
+	queryAccessLog := models.AccessLog{
+		UserID:    currentUser.UserID,
 		ProjectID: currentProject.ProjectID,
-		RepoName:  currentProject.Name + "/",
-		RepoTag:   "N/A",
-		GUID:      "N/A",
-		Operation: "create",
-		OpTime:    time.Now(),
 	}
-	if err := AddAccessLog(accessLog); err != nil {
-		t.Errorf("failed to add access log: %v", err)
-	}
-
-	query := &models.LogQueryParam{
-		Username:   currentUser.Username,
-		ProjectIDs: []int64{currentProject.ProjectID},
-	}
-	accessLogs, err := GetAccessLogs(query)
+	accessLogs, err := GetAccessLogs(queryAccessLog, 1000, 0)
 	if err != nil {
 		t.Errorf("Error occurred in GetAccessLog: %v", err)
 	}
@@ -507,11 +554,11 @@ func TestGetAccessLog(t *testing.T) {
 }
 
 func TestGetTotalOfAccessLogs(t *testing.T) {
-	query := &models.LogQueryParam{
-		Username:   currentUser.Username,
-		ProjectIDs: []int64{currentProject.ProjectID},
+	queryAccessLog := models.AccessLog{
+		UserID:    currentUser.UserID,
+		ProjectID: currentProject.ProjectID,
 	}
-	total, err := GetTotalOfAccessLogs(query)
+	total, err := GetTotalOfAccessLogs(queryAccessLog)
 	if err != nil {
 		t.Fatalf("failed to get total of access log: %v", err)
 	}
@@ -525,7 +572,7 @@ func TestAddAccessLog(t *testing.T) {
 	var err error
 	var accessLogList []models.AccessLog
 	accessLog := models.AccessLog{
-		Username:  currentUser.Username,
+		UserID:    currentUser.UserID,
 		ProjectID: currentProject.ProjectID,
 		RepoName:  currentProject.Name + "/",
 		RepoTag:   repoTag,
@@ -537,15 +584,7 @@ func TestAddAccessLog(t *testing.T) {
 	if err != nil {
 		t.Errorf("Error occurred in AddAccessLog: %v", err)
 	}
-
-	query := &models.LogQueryParam{
-		Username:   accessLog.Username,
-		ProjectIDs: []int64{accessLog.ProjectID},
-		Repository: accessLog.RepoName,
-		Tag:        accessLog.RepoTag,
-		Operations: []string{accessLog.Operation},
-	}
-	accessLogList, err = GetAccessLogs(query)
+	accessLogList, err = GetAccessLogs(accessLog, 1000, 0)
 	if err != nil {
 		t.Errorf("Error occurred in GetAccessLog: %v", err)
 	}
@@ -560,38 +599,67 @@ func TestAddAccessLog(t *testing.T) {
 	}
 }
 
+func TestAccessLog(t *testing.T) {
+	var err error
+	var accessLogList []models.AccessLog
+	accessLog := models.AccessLog{
+		UserID:    currentUser.UserID,
+		ProjectID: currentProject.ProjectID,
+		RepoName:  currentProject.Name + "/",
+		RepoTag:   repoTag2,
+		Operation: "create",
+	}
+	err = AccessLog(currentUser.Username, currentProject.Name, currentProject.Name+"/", repoTag2, "create")
+	if err != nil {
+		t.Errorf("Error occurred in AccessLog: %v", err)
+	}
+	accessLogList, err = GetAccessLogs(accessLog, 1000, 0)
+	if err != nil {
+		t.Errorf("Error occurred in GetAccessLog: %v", err)
+	}
+	if len(accessLogList) != 1 {
+		t.Errorf("The length of accesslog list should be 1, actual: %d", len(accessLogList))
+	}
+	if accessLogList[0].RepoName != projectName+"/" {
+		t.Errorf("The project name does not match, expected: %s, actual: %s", projectName+"/", accessLogList[0].RepoName)
+	}
+	if accessLogList[0].RepoTag != repoTag2 {
+		t.Errorf("The repo tag does not match, expected: %s, actual: %s", repoTag2, accessLogList[0].RepoTag)
+	}
+}
+
+func TestGetAccessLogCreator(t *testing.T) {
+	var err error
+	err = AccessLog(currentUser.Username, currentProject.Name, currentProject.Name+"/tomcat", repoTag2, "push")
+	if err != nil {
+		t.Errorf("Error occurred in AccessLog: %v", err)
+	}
+	err = AccessLog(currentUser.Username, currentProject.Name, currentProject.Name+"/tomcat", repoTag2, "push")
+	if err != nil {
+		t.Errorf("Error occurred in AccessLog: %v", err)
+	}
+
+	user, err := GetAccessLogCreator(currentProject.Name + "/tomcat")
+	if err != nil {
+		t.Errorf("Error occurred in GetAccessLogCreator: %v", err)
+	}
+	if user != currentUser.Username {
+		t.Errorf("The access log creator does not match, expected: %s, actual: %s", currentUser.Username, user)
+	}
+}
+
 func TestCountPull(t *testing.T) {
 	var err error
-	if err = AddAccessLog(models.AccessLog{
-		Username:  currentUser.Username,
-		ProjectID: currentProject.ProjectID,
-		RepoName:  currentProject.Name + "/tomcat",
-		RepoTag:   repoTag2,
-		Operation: "pull",
-		OpTime:    time.Now(),
-	}); err != nil {
+	err = AccessLog(currentUser.Username, currentProject.Name, currentProject.Name+"/tomcat", repoTag2, "pull")
+	if err != nil {
 		t.Errorf("Error occurred in AccessLog: %v", err)
 	}
-
-	if err = AddAccessLog(models.AccessLog{
-		Username:  currentUser.Username,
-		ProjectID: currentProject.ProjectID,
-		RepoName:  currentProject.Name + "/tomcat",
-		RepoTag:   repoTag2,
-		Operation: "pull",
-		OpTime:    time.Now(),
-	}); err != nil {
+	err = AccessLog(currentUser.Username, currentProject.Name, currentProject.Name+"/tomcat", repoTag2, "pull")
+	if err != nil {
 		t.Errorf("Error occurred in AccessLog: %v", err)
 	}
-
-	if err = AddAccessLog(models.AccessLog{
-		Username:  currentUser.Username,
-		ProjectID: currentProject.ProjectID,
-		RepoName:  currentProject.Name + "/tomcat",
-		RepoTag:   repoTag2,
-		Operation: "pull",
-		OpTime:    time.Now(),
-	}); err != nil {
+	err = AccessLog(currentUser.Username, currentProject.Name, currentProject.Name+"/tomcat", repoTag2, "pull")
+	if err != nil {
 		t.Errorf("Error occurred in AccessLog: %v", err)
 	}
 
@@ -604,7 +672,6 @@ func TestCountPull(t *testing.T) {
 	}
 }
 
-/*
 func TestProjectExists(t *testing.T) {
 	var exists bool
 	var err error
@@ -623,7 +690,7 @@ func TestProjectExists(t *testing.T) {
 		t.Errorf("The project with name: %s, does not exist", currentProject.Name)
 	}
 }
-*/
+
 func TestGetProjectById(t *testing.T) {
 	id := currentProject.ProjectID
 	p, err := GetProjectByID(id)
@@ -660,6 +727,42 @@ func TestGetUserByProject(t *testing.T) {
 
 }
 
+func TestToggleProjectPublicity(t *testing.T) {
+	err := ToggleProjectPublicity(currentProject.ProjectID, publicityOn)
+	if err != nil {
+		t.Errorf("Error occurred in ToggleProjectPublicity: %v", err)
+	}
+
+	currentProject, err = GetProjectByName(projectName)
+	if err != nil {
+		t.Errorf("Error occurred in GetProjectByName: %v", err)
+	}
+	if currentProject.Public != publicityOn {
+		t.Errorf("project, id: %d, its publicity is not on", currentProject.ProjectID)
+	}
+	err = ToggleProjectPublicity(currentProject.ProjectID, publicityOff)
+	if err != nil {
+		t.Errorf("Error occurred in ToggleProjectPublicity: %v", err)
+	}
+
+	currentProject, err = GetProjectByName(projectName)
+	if err != nil {
+		t.Errorf("Error occurred in GetProjectByName: %v", err)
+	}
+
+	if currentProject.Public != publicityOff {
+		t.Errorf("project, id: %d, its publicity is not off", currentProject.ProjectID)
+	}
+
+}
+
+func TestIsProjectPublic(t *testing.T) {
+
+	if isPublic := IsProjectPublic(projectName); isPublic {
+		t.Errorf("project, id: %d, its publicity is not false after turning off", currentProject.ProjectID)
+	}
+}
+
 func TestGetUserProjectRoles(t *testing.T) {
 	r, err := GetUserProjectRoles(currentUser.UserID, currentProject.ProjectID)
 	if err != nil {
@@ -676,8 +779,42 @@ func TestGetUserProjectRoles(t *testing.T) {
 	}
 }
 
+func TestProjectPermission(t *testing.T) {
+	roleCode, err := GetPermission(currentUser.Username, currentProject.Name)
+	if err != nil {
+		t.Errorf("Error occurred in GetPermission: %v", err)
+	}
+	if roleCode != "MDRWS" {
+		t.Errorf("The expected role code is MDRWS,but actual: %s", roleCode)
+	}
+}
+
+func TestGetTotalOfUserRelevantProjects(t *testing.T) {
+	total, err := GetTotalOfUserRelevantProjects(currentUser.UserID, "")
+	if err != nil {
+		t.Fatalf("failed to get total of user relevant projects: %v", err)
+	}
+
+	if total != 1 {
+		t.Errorf("unexpected total: %d != 1", total)
+	}
+}
+
+func TestGetUserRelevantProjects(t *testing.T) {
+	projects, err := GetUserRelevantProjects(currentUser.UserID, "")
+	if err != nil {
+		t.Errorf("Error occurred in GetUserRelevantProjects: %v", err)
+	}
+	if len(projects) != 1 {
+		t.Errorf("Expected length of relevant projects is 1, but actual: %d, the projects: %+v", len(projects), projects)
+	}
+	if projects[0].Name != projectName {
+		t.Errorf("Expected project name in the list: %s, actual: %s", projectName, projects[1].Name)
+	}
+}
+
 func TestGetTotalOfProjects(t *testing.T) {
-	total, err := GetTotalOfProjects(nil)
+	total, err := GetTotalOfProjects("")
 	if err != nil {
 		t.Fatalf("failed to get total of projects: %v", err)
 	}
@@ -688,7 +825,7 @@ func TestGetTotalOfProjects(t *testing.T) {
 }
 
 func TestGetProjects(t *testing.T) {
-	projects, err := GetProjects(nil)
+	projects, err := GetProjects("")
 	if err != nil {
 		t.Errorf("Error occurred in GetAllProjects: %v", err)
 	}
@@ -697,6 +834,19 @@ func TestGetProjects(t *testing.T) {
 	}
 	if projects[1].Name != projectName {
 		t.Errorf("Expected project name in the list: %s, actual: %s", projectName, projects[1].Name)
+	}
+}
+
+func TestGetPublicProjects(t *testing.T) {
+	projects, err := GetProjects("", 1)
+	if err != nil {
+		t.Errorf("Error occurred in getProjects: %v", err)
+	}
+	if len(projects) != 1 {
+		t.Errorf("Expected length of projects is 1, but actual: %d, the projects: %+v", len(projects), projects)
+	}
+	if projects[0].Name != "library" {
+		t.Errorf("Expected project name in the list: %s, actual: %s", "library", projects[0].Name)
 	}
 }
 
@@ -817,6 +967,23 @@ func TestChangeUserProfile(t *testing.T) {
 		if loginedUser.Comment != "Unit Test" {
 			t.Errorf("user email does not update, expected: %s, acutal: %s", "Unit Test", loginedUser.Comment)
 		}
+	}
+}
+
+func TestGetRecentLogs(t *testing.T) {
+	logs, err := GetRecentLogs(currentUser.UserID, 10, "2016-05-13 00:00:00", time.Now().String())
+	if err != nil {
+		t.Errorf("error occured in getting recent logs, error: %v", err)
+	}
+	if len(logs) <= 0 {
+		t.Errorf("get logs error, expected: %d, actual: %d", 1, len(logs))
+	}
+}
+
+func TestGetTopRepos(t *testing.T) {
+	_, err := GetTopRepos(10)
+	if err != nil {
+		t.Fatalf("error occured in getting top repos, error: %v", err)
 	}
 }
 
@@ -956,6 +1123,7 @@ func TestFilterRepTargets(t *testing.T) {
 func TestAddRepPolicy(t *testing.T) {
 	policy := models.RepPolicy{
 		ProjectID:   1,
+		Enabled:     1,
 		TargetID:    targetID,
 		Description: "whatever",
 		Name:        "mypolicy",
@@ -975,10 +1143,15 @@ func TestAddRepPolicy(t *testing.T) {
 		t.Errorf("Unable to find a policy with id: %d", id)
 	}
 
-	if p.Name != "mypolicy" || p.TargetID != targetID || p.Description != "whatever" {
-		t.Errorf("The data does not match, expected: Name: mypolicy, TargetID: %d, Description: whatever;\n result: Name: %s, TargetID: %d, Description: %s",
-			targetID, p.Name, p.TargetID, p.Description)
+	if p.Name != "mypolicy" || p.TargetID != targetID || p.Enabled != 1 || p.Description != "whatever" {
+		t.Errorf("The data does not match, expected: Name: mypolicy, TargetID: %d, Enabled: 1, Description: whatever;\n result: Name: %s, TargetID: %d, Enabled: %d, Description: %s",
+			targetID, p.Name, p.TargetID, p.Enabled, p.Description)
 	}
+	var tm = time.Now().AddDate(0, 0, -1)
+	if !p.StartTime.After(tm) {
+		t.Errorf("Unexpected start_time: %v", p.StartTime)
+	}
+
 }
 
 func TestGetRepPolicyByTarget(t *testing.T) {
@@ -1028,9 +1201,44 @@ func TestGetRepPolicyByName(t *testing.T) {
 
 }
 
+func TestDisableRepPolicy(t *testing.T) {
+	err := DisableRepPolicy(policyID)
+	if err != nil {
+		t.Errorf("Failed to disable policy, id: %d", policyID)
+	}
+	p, err := GetRepPolicy(policyID)
+	if err != nil {
+		t.Errorf("Error occurred in GetPolicy: %v, id: %d", err, policyID)
+	}
+	if p == nil {
+		t.Errorf("Unable to find a policy with id: %d", policyID)
+	}
+	if p.Enabled == 1 {
+		t.Errorf("The Enabled value of replication policy is still 1 after disabled, id: %d", policyID)
+	}
+}
+
+func TestEnableRepPolicy(t *testing.T) {
+	err := EnableRepPolicy(policyID)
+	if err != nil {
+		t.Errorf("Failed to disable policy, id: %d", policyID)
+	}
+	p, err := GetRepPolicy(policyID)
+	if err != nil {
+		t.Errorf("Error occurred in GetPolicy: %v, id: %d", err, policyID)
+	}
+	if p == nil {
+		t.Errorf("Unable to find a policy with id: %d", policyID)
+	}
+	if p.Enabled == 0 {
+		t.Errorf("The Enabled value of replication policy is still 0 after disabled, id: %d", policyID)
+	}
+}
+
 func TestAddRepPolicy2(t *testing.T) {
 	policy2 := models.RepPolicy{
 		ProjectID:   3,
+		Enabled:     0,
 		TargetID:    3,
 		Description: "whatever",
 		Name:        "mypolicy",
@@ -1046,6 +1254,10 @@ func TestAddRepPolicy2(t *testing.T) {
 	}
 	if p == nil {
 		t.Errorf("Unable to find a policy with id: %d", policyID2)
+	}
+	var tm time.Time
+	if p.StartTime.After(tm) {
+		t.Errorf("Unexpected start_time: %v", p.StartTime)
 	}
 }
 
@@ -1082,7 +1294,7 @@ func TestAddRepJob(t *testing.T) {
 func TestUpdateRepJobStatus(t *testing.T) {
 	err := UpdateRepJobStatus(jobID, models.JobFinished)
 	if err != nil {
-		t.Errorf("Error occurred in UpdateRepJobStatus, error: %v, id: %d", err, jobID)
+		t.Errorf("Error occured in UpdateRepJobStatus, error: %v, id: %d", err, jobID)
 		return
 	}
 	j, err := GetRepJob(jobID)
@@ -1097,7 +1309,7 @@ func TestUpdateRepJobStatus(t *testing.T) {
 	}
 	err = UpdateRepJobStatus(jobID, models.JobPending)
 	if err != nil {
-		t.Errorf("Error occurred in UpdateRepJobStatus when update it back to status pending, error: %v, id: %d", err, jobID)
+		t.Errorf("Error occured in UpdateRepJobStatus when update it back to status pending, error: %v, id: %d", err, jobID)
 		return
 	}
 }
@@ -1105,7 +1317,7 @@ func TestUpdateRepJobStatus(t *testing.T) {
 func TestGetRepPolicyByProject(t *testing.T) {
 	p1, err := GetRepPolicyByProject(99)
 	if err != nil {
-		t.Errorf("Error occurred in GetRepPolicyByProject:%v, project ID: %d", err, 99)
+		t.Errorf("Error occured in GetRepPolicyByProject:%v, project ID: %d", err, 99)
 		return
 	}
 	if len(p1) > 0 {
@@ -1131,7 +1343,7 @@ func TestGetRepPolicyByProject(t *testing.T) {
 func TestGetRepJobByPolicy(t *testing.T) {
 	jobs, err := GetRepJobByPolicy(999)
 	if err != nil {
-		t.Errorf("Error occurred in GetRepJobByPolicy: %v, policy ID: %d", err, 999)
+		t.Errorf("Error occured in GetRepJobByPolicy: %v, policy ID: %d", err, 999)
 		return
 	}
 	if len(jobs) > 0 {
@@ -1140,7 +1352,7 @@ func TestGetRepJobByPolicy(t *testing.T) {
 	}
 	jobs, err = GetRepJobByPolicy(policyID)
 	if err != nil {
-		t.Errorf("Error occurred in GetRepJobByPolicy: %v, policy ID: %d", err, policyID)
+		t.Errorf("Error occured in GetRepJobByPolicy: %v, policy ID: %d", err, policyID)
 		return
 	}
 	if len(jobs) != 1 {
@@ -1154,9 +1366,9 @@ func TestGetRepJobByPolicy(t *testing.T) {
 }
 
 func TestFilterRepJobs(t *testing.T) {
-	jobs, _, err := FilterRepJobs(policyID, "", []string{}, nil, nil, 1000, 0)
+	jobs, _, err := FilterRepJobs(policyID, "", "", nil, nil, 1000, 0)
 	if err != nil {
-		t.Errorf("Error occurred in FilterRepJobs: %v, policy ID: %d", err, policyID)
+		t.Errorf("Error occured in FilterRepJobs: %v, policy ID: %d", err, policyID)
 		return
 	}
 	if len(jobs) != 1 {
@@ -1172,13 +1384,13 @@ func TestFilterRepJobs(t *testing.T) {
 func TestDeleteRepJob(t *testing.T) {
 	err := DeleteRepJob(jobID)
 	if err != nil {
-		t.Errorf("Error occurred in DeleteRepJob: %v, id: %d", err, jobID)
+		t.Errorf("Error occured in DeleteRepJob: %v, id: %d", err, jobID)
 		return
 	}
 	t.Logf("deleted rep job, id: %d", jobID)
 	j, err := GetRepJob(jobID)
 	if err != nil {
-		t.Errorf("Error occurred in GetRepJob:%v", err)
+		t.Errorf("Error occured in GetRepJob:%v", err)
 		return
 	}
 	if j != nil {
@@ -1241,7 +1453,7 @@ func TestGetRepoJobToStop(t *testing.T) {
 func TestDeleteRepTarget(t *testing.T) {
 	err := DeleteRepTarget(targetID)
 	if err != nil {
-		t.Errorf("Error occurred in DeleteRepTarget: %v, id: %d", err, targetID)
+		t.Errorf("Error occured in DeleteRepTarget: %v, id: %d", err, targetID)
 		return
 	}
 	t.Logf("deleted target, id: %d", targetID)
@@ -1254,13 +1466,8 @@ func TestDeleteRepTarget(t *testing.T) {
 	}
 }
 
-func TestGetTotalOfRepPolicies(t *testing.T) {
-	_, err := GetTotalOfRepPolicies("", 1)
-	require.Nil(t, err)
-}
-
 func TestFilterRepPolicies(t *testing.T) {
-	_, err := FilterRepPolicies("name", 0, 0, 0)
+	_, err := FilterRepPolicies("name", 0)
 	if err != nil {
 		t.Fatalf("failed to filter policy: %v", err)
 	}
@@ -1279,13 +1486,13 @@ func TestUpdateRepPolicy(t *testing.T) {
 func TestDeleteRepPolicy(t *testing.T) {
 	err := DeleteRepPolicy(policyID)
 	if err != nil {
-		t.Errorf("Error occurred in DeleteRepPolicy: %v, id: %d", err, policyID)
+		t.Errorf("Error occured in DeleteRepPolicy: %v, id: %d", err, policyID)
 		return
 	}
 	t.Logf("delete rep policy, id: %d", policyID)
 	p, err := GetRepPolicy(policyID)
 	if err != nil && err != orm.ErrNoRows {
-		t.Errorf("Error occurred in GetRepPolicy:%v", err)
+		t.Errorf("Error occured in GetRepPolicy:%v", err)
 	}
 	if p != nil && p.Deleted != 1 {
 		t.Errorf("Able to find rep policy after deletion, id: %d", policyID)
@@ -1373,7 +1580,8 @@ func TestGetOrmer(t *testing.T) {
 func TestAddRepository(t *testing.T) {
 	repoRecord := models.RepoRecord{
 		Name:        currentProject.Name + "/" + repositoryName,
-		ProjectID:   currentProject.ProjectID,
+		OwnerName:   currentUser.Username,
+		ProjectName: currentProject.Name,
 		Description: "testing repo",
 		PullCount:   0,
 		StarCount:   0,
@@ -1444,269 +1652,4 @@ func TestDeleteRepository(t *testing.T) {
 	if repository != nil {
 		t.Errorf("repository is not nil after deletion, repository: %+v", repository)
 	}
-}
-
-var sj1 = models.ScanJob{
-	Status:     models.JobPending,
-	Repository: "library/ubuntu",
-	Tag:        "14.04",
-}
-
-var sj2 = models.ScanJob{
-	Status:     models.JobPending,
-	Repository: "library/ubuntu",
-	Tag:        "15.10",
-	Digest:     "sha256:0204dc6e09fa57ab99ac40e415eb637d62c8b2571ecbbc9ca0eb5e2ad2b5c56f",
-}
-
-func TestAddScanJob(t *testing.T) {
-	assert := assert.New(t)
-	id, err := AddScanJob(sj1)
-	assert.Nil(err)
-	r1, err := GetScanJob(id)
-	assert.Nil(err)
-	assert.Equal(sj1.Tag, r1.Tag)
-	assert.Equal(sj1.Status, r1.Status)
-	assert.Equal(sj1.Repository, r1.Repository)
-	err = ClearTable(models.ScanJobTable)
-	assert.Nil(err)
-}
-
-func TestGetScanJobs(t *testing.T) {
-	assert := assert.New(t)
-	_, err := AddScanJob(sj1)
-	assert.Nil(err)
-	id2, err := AddScanJob(sj1)
-	assert.Nil(err)
-	_, err = AddScanJob(sj2)
-	assert.Nil(err)
-	r, err := GetScanJobsByImage("library/ubuntu", "14.04")
-	assert.Nil(err)
-	assert.Equal(2, len(r))
-	assert.Equal(id2, r[0].ID)
-	r, err = GetScanJobsByImage("library/ubuntu", "14.04", 1)
-	assert.Nil(err)
-	assert.Equal(1, len(r))
-	r, err = GetScanJobsByDigest("sha256:nono")
-	assert.Nil(err)
-	assert.Equal(0, len(r))
-	r, err = GetScanJobsByDigest(sj2.Digest)
-	assert.Equal(1, len(r))
-	assert.Equal(sj2.Tag, r[0].Tag)
-	assert.Nil(err)
-	err = ClearTable(models.ScanJobTable)
-	assert.Nil(err)
-}
-
-func TestUpdateScanJobStatus(t *testing.T) {
-	assert := assert.New(t)
-	id, err := AddScanJob(sj1)
-	assert.Nil(err)
-	err = UpdateScanJobStatus(id, "newstatus")
-	assert.Nil(err)
-	j, err := GetScanJob(id)
-	assert.Nil(err)
-	assert.Equal("newstatus", j.Status)
-	err = ClearTable(models.ScanJobTable)
-	assert.Nil(err)
-}
-
-func TestImgScanOverview(t *testing.T) {
-	assert := assert.New(t)
-	err := ClearTable(models.ScanOverviewTable)
-	assert.Nil(err)
-	digest := "sha256:0204dc6e09fa57ab99ac40e415eb637d62c8b2571ecbbc9ca0eb5e2ad2b5c56f"
-	res, err := GetImgScanOverview(digest)
-	assert.Nil(err)
-	assert.Nil(res)
-	err = SetScanJobForImg(digest, 33)
-	assert.Nil(err)
-	res, err = GetImgScanOverview(digest)
-	assert.Nil(err)
-	assert.Equal(int64(33), res.JobID)
-	err = SetScanJobForImg(digest, 22)
-	assert.Nil(err)
-	res, err = GetImgScanOverview(digest)
-	assert.Nil(err)
-	assert.Equal(int64(22), res.JobID)
-	pk := "22-sha256:sdfsdfarfwefwr23r43t34ggregergerger"
-	comp := &models.ComponentsOverview{
-		Total: 2,
-		Summary: []*models.ComponentsOverviewEntry{
-			&models.ComponentsOverviewEntry{
-				Sev:   int(models.SevMedium),
-				Count: 2,
-			},
-		},
-	}
-	err = UpdateImgScanOverview(digest, pk, models.SevMedium, comp)
-	assert.Nil(err)
-	res, err = GetImgScanOverview(digest)
-	assert.Nil(err)
-	assert.Equal(pk, res.DetailsKey)
-	assert.Equal(int(models.SevMedium), res.Sev)
-	assert.Equal(2, res.CompOverview.Summary[0].Count)
-}
-
-func TestVulnTimestamp(t *testing.T) {
-
-	assert := assert.New(t)
-	err := ClearTable(models.ClairVulnTimestampTable)
-	assert.Nil(err)
-	ns := "ubuntu:14"
-	res, err := ListClairVulnTimestamps()
-	assert.Nil(err)
-	assert.Equal(0, len(res))
-	err = SetClairVulnTimestamp(ns, time.Now())
-	assert.Nil(err)
-	res, err = ListClairVulnTimestamps()
-	assert.Nil(err)
-	assert.Equal(1, len(res))
-	assert.Equal(ns, res[0].Namespace)
-	old := time.Now()
-	t.Logf("Sleep 3 seconds")
-	time.Sleep(3 * time.Second)
-	err = SetClairVulnTimestamp(ns, time.Now())
-	assert.Nil(err)
-	res, err = ListClairVulnTimestamps()
-	assert.Nil(err)
-	assert.Equal(1, len(res))
-
-	d := res[0].LastUpdate.Sub(old)
-	if d < 2*time.Second {
-		t.Errorf("Delta should be larger than 2 seconds! old: %v, lastupdate: %v", old, res[0].LastUpdate)
-	}
-}
-
-func TestListScanOverviews(t *testing.T) {
-	assert := assert.New(t)
-	err := ClearTable(models.ScanOverviewTable)
-	assert.Nil(err)
-	l, err := ListImgScanOverviews()
-	assert.Nil(err)
-	assert.Equal(0, len(l))
-	err = ClearTable(models.ScanOverviewTable)
-	assert.Nil(err)
-}
-
-func TestGetScanJobsByStatus(t *testing.T) {
-	assert := assert.New(t)
-	err := ClearTable(models.ScanOverviewTable)
-	assert.Nil(err)
-	id, err := AddScanJob(sj1)
-	assert.Nil(err)
-	err = UpdateScanJobStatus(id, models.JobRunning)
-	assert.Nil(err)
-	r1, err := GetScanJobsByStatus(models.JobPending, models.JobCanceled)
-	assert.Nil(err)
-	assert.Equal(0, len(r1))
-	r2, err := GetScanJobsByStatus(models.JobPending, models.JobRunning)
-	assert.Nil(err)
-	assert.Equal(1, len(r2))
-	assert.Equal(sj1.Repository, r2[0].Repository)
-}
-
-func TestIsSuperUser(t *testing.T) {
-	assert := assert.New(t)
-	assert.True(IsSuperUser("admin"))
-	assert.False(IsSuperUser("none"))
-}
-
-func TestSaveConfigEntries(t *testing.T) {
-	configEntries := []models.ConfigEntry{
-		{
-			Key:   "teststringkey",
-			Value: "192.168.111.211",
-		},
-		{
-			Key:   "testboolkey",
-			Value: "true",
-		},
-		{
-			Key:   "testnumberkey",
-			Value: "5",
-		},
-		{
-			Key:   common.CfgDriverDB,
-			Value: "db",
-		},
-	}
-	err := SaveConfigEntries(configEntries)
-	if err != nil {
-		t.Fatalf("failed to save configuration to database %v", err)
-	}
-	readEntries, err := GetConfigEntries()
-	if err != nil {
-		t.Fatalf("Failed to get configuration from database %v", err)
-	}
-	findItem := 0
-	for _, entry := range readEntries {
-		switch entry.Key {
-		case "teststringkey":
-			if "192.168.111.211" == entry.Value {
-				findItem++
-			}
-		case "testnumberkey":
-			if "5" == entry.Value {
-				findItem++
-			}
-		case "testboolkey":
-			if "true" == entry.Value {
-				findItem++
-			}
-		default:
-		}
-	}
-	if findItem != 3 {
-		t.Fatalf("Should update 3 configuration but only update %d", findItem)
-	}
-
-	configEntries = []models.ConfigEntry{
-		{
-			Key:   "teststringkey",
-			Value: "192.168.111.215",
-		},
-		{
-			Key:   "testboolkey",
-			Value: "false",
-		},
-		{
-			Key:   "testnumberkey",
-			Value: "7",
-		},
-		{
-			Key:   common.CfgDriverDB,
-			Value: "db",
-		},
-	}
-	err = SaveConfigEntries(configEntries)
-	if err != nil {
-		t.Fatalf("failed to save configuration to database %v", err)
-	}
-	readEntries, err = GetConfigEntries()
-	if err != nil {
-		t.Fatalf("Failed to get configuration from database %v", err)
-	}
-	findItem = 0
-	for _, entry := range readEntries {
-		switch entry.Key {
-		case "teststringkey":
-			if "192.168.111.215" == entry.Value {
-				findItem++
-			}
-		case "testnumberkey":
-			if "7" == entry.Value {
-				findItem++
-			}
-		case "testboolkey":
-			if "false" == entry.Value {
-				findItem++
-			}
-		default:
-		}
-	}
-	if findItem != 3 {
-		t.Fatalf("Should update 3 configuration but only update %d", findItem)
-	}
-
 }

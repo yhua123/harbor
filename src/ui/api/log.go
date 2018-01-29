@@ -1,117 +1,87 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+   Copyright (c) 2016 VMware, Inc. All Rights Reserved.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
 
 package api
 
 import (
-	"fmt"
+	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/vmware/harbor/src/common/dao"
 	"github.com/vmware/harbor/src/common/models"
-	"github.com/vmware/harbor/src/common/utils"
+	"github.com/vmware/harbor/src/common/utils/log"
+    "github.com/vmware/harbor/src/common/api"
 )
 
 //LogAPI handles request api/logs
 type LogAPI struct {
-	BaseController
-	username   string
-	isSysAdmin bool
+	api.BaseAPI
+	userID int
 }
 
 //Prepare validates the URL and the user
 func (l *LogAPI) Prepare() {
-	l.BaseController.Prepare()
-	if !l.SecurityCtx.IsAuthenticated() {
-		l.HandleUnauthorized()
-		return
-	}
-	l.username = l.SecurityCtx.GetUsername()
-	l.isSysAdmin = l.SecurityCtx.IsSysAdmin()
+	l.userID = l.ValidateUser()
 }
 
 //Get returns the recent logs according to parameters
 func (l *LogAPI) Get() {
-	page, size := l.GetPaginationParams()
-	query := &models.LogQueryParam{
-		Username:   l.GetString("username"),
-		Repository: l.GetString("repository"),
-		Tag:        l.GetString("tag"),
-		Operations: l.GetStrings("operation"),
-		Pagination: &models.Pagination{
-			Page: page,
-			Size: size,
-		},
-	}
-
-	timestamp := l.GetString("begin_timestamp")
-	if len(timestamp) > 0 {
-		t, err := utils.ParseTimeStamp(timestamp)
+	var err error
+	startTime := l.GetString("start_time")
+	if len(startTime) != 0 {
+		i, err := strconv.ParseInt(startTime, 10, 64)
 		if err != nil {
-			l.HandleBadRequest(fmt.Sprintf("invalid begin_timestamp: %s", timestamp))
-			return
+			log.Errorf("Parse startTime to int error, err: %v", err)
+			l.CustomAbort(http.StatusBadRequest, "startTime is not a valid integer")
 		}
-		query.BeginTime = t
+		startTime = time.Unix(i, 0).String()
 	}
 
-	timestamp = l.GetString("end_timestamp")
-	if len(timestamp) > 0 {
-		t, err := utils.ParseTimeStamp(timestamp)
+	endTime := l.GetString("end_time")
+	if len(endTime) != 0 {
+		j, err := strconv.ParseInt(endTime, 10, 64)
 		if err != nil {
-			l.HandleBadRequest(fmt.Sprintf("invalid end_timestamp: %s", timestamp))
-			return
+			log.Errorf("Parse endTime to int error, err: %v", err)
+			l.CustomAbort(http.StatusBadRequest, "endTime is not a valid integer")
 		}
-		query.EndTime = t
+		endTime = time.Unix(j, 0).String()
 	}
 
-	if !l.isSysAdmin {
-		projects, err := l.SecurityCtx.GetMyProjects()
+	var linesNum int
+	lines := l.GetString("lines")
+	if len(lines) != 0 {
+		linesNum, err = strconv.Atoi(lines)
 		if err != nil {
-			l.HandleInternalServerError(fmt.Sprintf(
-				"failed to get projects of user %s: %v", l.username, err))
-			return
+			log.Errorf("Get parameters error--lines, err: %v", err)
+			l.CustomAbort(http.StatusBadRequest, "bad request of lines")
 		}
-
-		if len(projects) == 0 {
-			l.SetPaginationHeader(0, page, size)
-			l.Data["json"] = nil
-			l.ServeJSON()
-			return
+		if linesNum <= 0 {
+			log.Warning("lines must be a positive integer")
+			l.CustomAbort(http.StatusBadRequest, "lines is 0 or negative")
 		}
-
-		ids := []int64{}
-		for _, project := range projects {
-			ids = append(ids, project.ProjectID)
-		}
-		query.ProjectIDs = ids
+	} else if len(startTime) == 0 && len(endTime) == 0 {
+		linesNum = 10
 	}
 
-	total, err := dao.GetTotalOfAccessLogs(query)
+	var logList []models.AccessLog
+	logList, err = dao.GetRecentLogs(l.userID, linesNum, startTime, endTime)
 	if err != nil {
-		l.HandleInternalServerError(fmt.Sprintf(
-			"failed to get total of access logs: %v", err))
-		return
+		log.Errorf("Get recent logs error, err: %v", err)
+		l.CustomAbort(http.StatusInternalServerError, "Internal error")
 	}
-
-	logs, err := dao.GetAccessLogs(query)
-	if err != nil {
-		l.HandleInternalServerError(fmt.Sprintf(
-			"failed to get access logs: %v", err))
-		return
-	}
-
-	l.SetPaginationHeader(total, page, size)
-
-	l.Data["json"] = logs
+	l.Data["json"] = logList
 	l.ServeJSON()
 }

@@ -1,173 +1,136 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+   Copyright (c) 2016 VMware, Inc. All Rights Reserved.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
 
 package config
 
 import (
 	"fmt"
 	"os"
-	"strings"
+	"strconv"
 
-	"github.com/vmware/harbor/src/adminserver/client"
-	"github.com/vmware/harbor/src/common"
-	comcfg "github.com/vmware/harbor/src/common/config"
-	"github.com/vmware/harbor/src/common/models"
+	"github.com/astaxie/beego"
 	"github.com/vmware/harbor/src/common/utils/log"
 )
 
-const (
-	defaultKeyPath   string = "/etc/jobservice/key"
-	defaultLogDir    string = "/var/log/jobs"
-	secretCookieName string = "secret"
-)
+const defaultMaxWorkers int = 10
 
-var (
-	// AdminserverClient is a client for adminserver
-	AdminserverClient client.Client
-	mg                *comcfg.Manager
-	keyProvider       comcfg.KeyProvider
-)
+var maxJobWorkers int
+var localUIURL string
+var localRegURL string
+var logDir string
+var uiSecret string
+var secretKey string
+var verifyRemoteCert string
 
-// Init configurations
-func Init() error {
-	//init key provider
-	initKeyProvider()
-
-	adminServerURL := os.Getenv("ADMINSERVER_URL")
-	if len(adminServerURL) == 0 {
-		adminServerURL = "http://adminserver"
-	}
-	log.Infof("initializing client for adminserver %s ...", adminServerURL)
-	cfg := &client.Config{
-		Secret: UISecret(),
-	}
-	AdminserverClient = client.NewClient(adminServerURL, cfg)
-	if err := AdminserverClient.Ping(); err != nil {
-		return fmt.Errorf("failed to ping adminserver: %v", err)
-	}
-
-	mg = comcfg.NewManager(AdminserverClient, true)
-
-	if _, err := mg.Load(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func initKeyProvider() {
-	path := os.Getenv("KEY_PATH")
-	if len(path) == 0 {
-		path = defaultKeyPath
-	}
-	log.Infof("key path: %s", path)
-
-	keyProvider = comcfg.NewFileKeyProvider(path)
-}
-
-// Database ...
-func Database() (*models.Database, error) {
-	cfg, err := mg.Get()
+func init() {
+	maxWorkersEnv := os.Getenv("MAX_JOB_WORKERS")
+	maxWorkers64, err := strconv.ParseInt(maxWorkersEnv, 10, 32)
+	maxJobWorkers = int(maxWorkers64)
 	if err != nil {
-		return nil, err
+		log.Warningf("Failed to parse max works setting, error: %v, the default value: %d will be used", err, defaultMaxWorkers)
+		maxJobWorkers = defaultMaxWorkers
 	}
-	database := &models.Database{}
-	database.Type = cfg[common.DatabaseType].(string)
-	mysql := &models.MySQL{}
-	mysql.Host = cfg[common.MySQLHost].(string)
-	mysql.Port = int(cfg[common.MySQLPort].(float64))
-	mysql.Username = cfg[common.MySQLUsername].(string)
-	mysql.Password = cfg[common.MySQLPassword].(string)
-	mysql.Database = cfg[common.MySQLDatabase].(string)
-	database.MySQL = mysql
-	sqlite := &models.SQLite{}
-	sqlite.File = cfg[common.SQLiteFile].(string)
-	database.SQLite = sqlite
 
-	return database, nil
+	localRegURL = os.Getenv("REGISTRY_URL")
+	if len(localRegURL) == 0 {
+		localRegURL = "http://registry:5000"
+	}
+
+	localUIURL = os.Getenv("UI_URL")
+	if len(localUIURL) == 0 {
+		localUIURL = "http://ui"
+	}
+
+	logDir = os.Getenv("LOG_DIR")
+	if len(logDir) == 0 {
+		logDir = "/var/log"
+	}
+
+	f, err := os.Open(logDir)
+	defer f.Close()
+	if err != nil {
+		panic(err)
+	}
+	finfo, err := f.Stat()
+	if err != nil {
+		panic(err)
+	}
+	if !finfo.IsDir() {
+		panic(fmt.Sprintf("%s is not a direcotry", logDir))
+	}
+
+	uiSecret = os.Getenv("UI_SECRET")
+	if len(uiSecret) == 0 {
+		panic("UI Secret is not set")
+	}
+
+	verifyRemoteCert = os.Getenv("VERIFY_REMOTE_CERT")
+	if len(verifyRemoteCert) == 0 {
+		verifyRemoteCert = "on"
+	}
+
+	configPath := os.Getenv("CONFIG_PATH")
+	if len(configPath) != 0 {
+		log.Infof("Config path: %s", configPath)
+		beego.LoadAppConfig("ini", configPath)
+	}
+
+	secretKey = os.Getenv("SECRET_KEY")
+	if len(secretKey) != 16 {
+		panic("The length of secretkey has to be 16 characters!")
+	}
+
+	log.Debugf("config: maxJobWorkers: %d", maxJobWorkers)
+	log.Debugf("config: localUIURL: %s", localUIURL)
+	log.Debugf("config: localRegURL: %s", localRegURL)
+	log.Debugf("config: verifyRemoteCert: %s", verifyRemoteCert)
+	log.Debugf("config: logDir: %s", logDir)
+	log.Debugf("config: uiSecret: ******")
 }
 
 // MaxJobWorkers ...
-func MaxJobWorkers() (int, error) {
-	cfg, err := mg.Get()
-	if err != nil {
-		return 0, err
-	}
-	return int(cfg[common.MaxJobWorkers].(float64)), nil
+func MaxJobWorkers() int {
+	return maxJobWorkers
 }
 
 // LocalUIURL returns the local ui url, job service will use this URL to call API hosted on ui process
 func LocalUIURL() string {
-	cfg, err := mg.Get()
-	if err != nil {
-		log.Warningf("Failed to Get job service UI URL from backend, error: %v, will return default value.")
-		return "http://ui"
-	}
-	return strings.TrimSuffix(cfg[common.UIURL].(string), "/")
-
+	return localUIURL
 }
 
 // LocalRegURL returns the local registry url, job service will use this URL to pull image from the registry
-func LocalRegURL() (string, error) {
-	cfg, err := mg.Get()
-	if err != nil {
-		return "", err
-	}
-	return cfg[common.RegistryURL].(string), nil
+func LocalRegURL() string {
+	return localRegURL
 }
 
 // LogDir returns the absolute path to which the log file will be written
 func LogDir() string {
-	dir := os.Getenv("LOG_DIR")
-	if len(dir) == 0 {
-		dir = defaultLogDir
-	}
-	return dir
+	return logDir
+}
+
+// UISecret will return the value of secret cookie for jobsevice to call UI API.
+func UISecret() string {
+	return uiSecret
 }
 
 // SecretKey will return the secret key for encryption/decryption password in target.
-func SecretKey() (string, error) {
-	return keyProvider.Get(nil)
+func SecretKey() string {
+	return secretKey
 }
 
-// UISecret returns a secret to mark UI when communicate with other
-// component
-func UISecret() string {
-	return os.Getenv("UI_SECRET")
-}
-
-// JobserviceSecret returns a secret to mark Jobservice when communicate with
-// other component
-func JobserviceSecret() string {
-	return os.Getenv("JOBSERVICE_SECRET")
-}
-
-// ExtEndpoint ...
-func ExtEndpoint() (string, error) {
-	cfg, err := mg.Get()
-	if err != nil {
-		return "", err
-	}
-	return cfg[common.ExtEndpoint].(string), nil
-}
-
-// InternalTokenServiceEndpoint ...
-func InternalTokenServiceEndpoint() string {
-	return LocalUIURL() + "/service/token"
-}
-
-// ClairEndpoint returns the end point of clair instance, by default it's the one deployed within Harbor.
-func ClairEndpoint() string {
-	return common.DefaultClairEndpoint
+// VerifyRemoteCert return the flag to tell jobservice whether or not verify the cert of remote registry
+func VerifyRemoteCert() bool {
+	return verifyRemoteCert != "off"
 }

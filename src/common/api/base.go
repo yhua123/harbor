@@ -1,16 +1,17 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+   Copyright (c) 2016 VMware, Inc. All Rights Reserved.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
 
 package api
 
@@ -21,8 +22,11 @@ import (
 	"strconv"
 
 	"github.com/astaxie/beego/validation"
-	http_error "github.com/vmware/harbor/src/common/utils/error"
+	"github.com/vmware/harbor/src/common/config"
+	"github.com/vmware/harbor/src/common/dao"
+	"github.com/vmware/harbor/src/common/models"
 	"github.com/vmware/harbor/src/common/utils/log"
+	"github.com/vmware/harbor/src/ui/auth"
 
 	"github.com/astaxie/beego"
 )
@@ -35,73 +39,6 @@ const (
 // BaseAPI wraps common methods for controllers to host API
 type BaseAPI struct {
 	beego.Controller
-}
-
-// GetStringFromPath gets the param from path and returns it as string
-func (b *BaseAPI) GetStringFromPath(key string) string {
-	return b.Ctx.Input.Param(key)
-}
-
-// GetInt64FromPath gets the param from path and returns it as int64
-func (b *BaseAPI) GetInt64FromPath(key string) (int64, error) {
-	value := b.Ctx.Input.Param(key)
-	return strconv.ParseInt(value, 10, 64)
-}
-
-// HandleNotFound ...
-func (b *BaseAPI) HandleNotFound(text string) {
-	log.Info(text)
-	b.RenderError(http.StatusNotFound, text)
-}
-
-// HandleUnauthorized ...
-func (b *BaseAPI) HandleUnauthorized() {
-	log.Info("unauthorized")
-	b.RenderError(http.StatusUnauthorized, "")
-}
-
-// HandleForbidden ...
-func (b *BaseAPI) HandleForbidden(username string) {
-	log.Infof("forbidden: %s", username)
-	b.RenderError(http.StatusForbidden, "")
-}
-
-// HandleBadRequest ...
-func (b *BaseAPI) HandleBadRequest(text string) {
-	log.Info(text)
-	b.RenderError(http.StatusBadRequest, text)
-}
-
-// HandleConflict ...
-func (b *BaseAPI) HandleConflict(text ...string) {
-	msg := ""
-	if len(text) > 0 {
-		msg = text[0]
-	}
-	log.Infof("conflict: %s", msg)
-
-	b.RenderError(http.StatusConflict, msg)
-}
-
-// HandleInternalServerError ...
-func (b *BaseAPI) HandleInternalServerError(text string) {
-	log.Error(text)
-	b.RenderError(http.StatusInternalServerError, "")
-}
-
-// ParseAndHandleError : if the err is an instance of utils/error.Error,
-// return the status code and the detail message contained in err, otherwise
-// return 500
-func (b *BaseAPI) ParseAndHandleError(text string, err error) {
-	if err == nil {
-		return
-	}
-	log.Errorf("%s: %v", text, err)
-	if e, ok := err.(*http_error.HTTPError); ok {
-		b.RenderError(e.StatusCode, e.Detail)
-		return
-	}
-	b.RenderError(http.StatusInternalServerError, "")
 }
 
 // Render returns nil as it won't render template
@@ -118,8 +55,7 @@ func (b *BaseAPI) RenderError(code int, text string) {
 func (b *BaseAPI) DecodeJSONReq(v interface{}) {
 	err := json.Unmarshal(b.Ctx.Input.CopyBody(1<<32), v)
 	if err != nil {
-		log.Errorf("Error while decoding the json request, error: %v, %v",
-			err, string(b.Ctx.Input.CopyBody(1 << 32)[:]))
+		log.Errorf("Error while decoding the json request, error: %v", err)
 		b.CustomAbort(http.StatusBadRequest, "Invalid json request")
 	}
 }
@@ -148,12 +84,61 @@ func (b *BaseAPI) DecodeJSONReqAndValidate(v interface{}) {
 	b.Validate(v)
 }
 
+// ValidateUser checks if the request triggered by a valid user
+func (b *BaseAPI) ValidateUser() int {
+	userID, needsCheck, ok := b.GetUserIDForRequest()
+	if !ok {
+		log.Warning("No user id in session, canceling request")
+		b.CustomAbort(http.StatusUnauthorized, "")
+	}
+	if needsCheck {
+		u, err := dao.GetUser(models.User{UserID: userID})
+		if err != nil {
+			log.Errorf("Error occurred in GetUser, error: %v", err)
+			b.CustomAbort(http.StatusInternalServerError, "Internal error.")
+		}
+		if u == nil {
+			log.Warningf("User was deleted already, user id: %d, canceling request.", userID)
+			b.CustomAbort(http.StatusUnauthorized, "")
+		}
+	}
+	return userID
+}
+
+// GetUserIDForRequest tries to get user ID from basic auth header and session.
+// It returns the user ID, whether need further verification(when the id is from session) and if the action is successful
+func (b *BaseAPI) GetUserIDForRequest() (int, bool, bool) {
+	username, password, ok := b.Ctx.Request.BasicAuth()
+	if ok {
+		log.Infof("Requst with Basic Authentication header, username: %s", username)
+		user, err := auth.Login(models.AuthModel{
+			Principal: username,
+			Password:  password,
+		})
+		if err != nil {
+			log.Errorf("Error while trying to login, username: %s, error: %v", username, err)
+			user = nil
+		}
+		if user != nil {
+			// User login successfully no further check required.
+			return user.UserID, false, true
+		}
+	}
+	sessionUserID, ok := b.GetSession("userId").(int)
+	if ok {
+		// The ID is from session
+		return sessionUserID, true, true
+	}
+	log.Debug("No valid user id in session.")
+	return 0, false, false
+}
+
 // Redirect does redirection to resource URI with http header status code.
 func (b *BaseAPI) Redirect(statusCode int, resouceID string) {
 	requestURI := b.Ctx.Request.RequestURI
-	resourceURI := requestURI + "/" + resouceID
+	resoucreURI := requestURI + "/" + resouceID
 
-	b.Ctx.Redirect(statusCode, resourceURI)
+	b.Ctx.Redirect(statusCode, resoucreURI)
 }
 
 // GetIDFromURL checks the ID in request URL
@@ -177,7 +162,7 @@ func (b *BaseAPI) SetPaginationHeader(total, page, pageSize int64) {
 
 	link := ""
 
-	// SetPaginationHeader set previous link
+	// SetPaginationHeader setprevious link
 	if page > 1 && (page-1)*pageSize <= total {
 		u := *(b.Ctx.Request.URL)
 		q := u.Query()
@@ -189,7 +174,7 @@ func (b *BaseAPI) SetPaginationHeader(total, page, pageSize int64) {
 		link += fmt.Sprintf("<%s>; rel=\"prev\"", u.String())
 	}
 
-	// SetPaginationHeader set next link
+	// SetPaginationHeader setnext link
 	if pageSize*page < total {
 		u := *(b.Ctx.Request.URL)
 		q := u.Query()
@@ -224,4 +209,9 @@ func (b *BaseAPI) GetPaginationParams() (page, pageSize int64) {
 	}
 
 	return page, pageSize
+}
+
+// GetIsInsecure ...
+func GetIsInsecure() bool {
+	return !config.VerifyRemoteCert()
 }

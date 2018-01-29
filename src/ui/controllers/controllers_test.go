@@ -1,16 +1,3 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 package controllers
 
 import (
@@ -22,17 +9,11 @@ import (
 	"testing"
 
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/astaxie/beego"
+	//"github.com/dghubble/sling"
 	"github.com/stretchr/testify/assert"
-	"github.com/vmware/harbor/src/common"
-	"github.com/vmware/harbor/src/common/dao"
-	"github.com/vmware/harbor/src/common/models"
-	"github.com/vmware/harbor/src/common/utils/test"
-	"github.com/vmware/harbor/src/ui/config"
-	"github.com/vmware/harbor/src/ui/proxy"
 )
 
 //const (
@@ -48,6 +29,7 @@ import (
 //var admin *usrInfo
 
 func init() {
+
 	_, file, _, _ := runtime.Caller(1)
 	apppath, _ := filepath.Abs(filepath.Dir(filepath.Join(file, ".."+string(filepath.Separator))))
 	beego.BConfig.WebConfig.Session.SessionOn = true
@@ -55,86 +37,37 @@ func init() {
 	beego.AddTemplateExt("htm")
 
 	beego.Router("/", &IndexController{})
+	beego.Router("/dashboard", &DashboardController{})
+	beego.Router("/project", &ProjectController{})
+	beego.Router("/repository", &RepositoryController{})
+	beego.Router("/sign_up", &SignUpController{})
+	beego.Router("/add_new", &AddNewController{})
+	beego.Router("/account_setting", &AccountSettingController{})
+	beego.Router("/change_password", &ChangePasswordController{})
+	beego.Router("/admin_option", &AdminOptionController{})
+	beego.Router("/forgot_password", &ForgotPasswordController{})
+	beego.Router("/reset_password", &ResetPasswordController{})
+	beego.Router("/search", &SearchController{})
 
 	beego.Router("/login", &CommonController{}, "post:Login")
 	beego.Router("/log_out", &CommonController{}, "get:LogOut")
 	beego.Router("/reset", &CommonController{}, "post:ResetPassword")
 	beego.Router("/userExists", &CommonController{}, "post:UserExists")
-	beego.Router("/sendEmail", &CommonController{}, "get:SendResetEmail")
-	beego.Router("/registryproxy/*", &RegistryProxy{}, "*:Handle")
-}
+	beego.Router("/sendEmail", &CommonController{}, "get:SendEmail")
+	beego.Router("/language", &CommonController{}, "get:SwitchLanguage")
 
-func TestMain(m *testing.M) {
+	beego.Router("/optional_menu", &OptionalMenuController{})
+	beego.Router("/navigation_header", &NavigationHeaderController{})
+	beego.Router("/navigation_detail", &NavigationDetailController{})
+	beego.Router("/sign_in", &SignInController{})
 
-	rc := m.Run()
-	if rc != 0 {
-		os.Exit(rc)
-	}
 	//Init user Info
 	//admin = &usrInfo{adminName, adminPwd}
-}
 
-// TestUserResettable
-func TestUserResettable(t *testing.T) {
-	assert := assert.New(t)
-	DBAuthConfig := map[string]interface{}{
-		common.AUTHMode:        common.DBAuth,
-		common.CfgExpiration:   5,
-		common.TokenExpiration: 30,
-	}
-
-	LDAPAuthConfig := map[string]interface{}{
-		common.AUTHMode:        common.LDAPAuth,
-		common.CfgExpiration:   5,
-		common.TokenExpiration: 30,
-	}
-	DBAuthAdminsvr, err := test.NewAdminserver(DBAuthConfig)
-	if err != nil {
-		panic(err)
-	}
-	LDAPAuthAdminsvr, err := test.NewAdminserver(LDAPAuthConfig)
-	if err != nil {
-		panic(err)
-	}
-	defer DBAuthAdminsvr.Close()
-	defer LDAPAuthAdminsvr.Close()
-	if err := config.InitByURL(LDAPAuthAdminsvr.URL); err != nil {
-		panic(err)
-	}
-	u1 := &models.User{
-		UserID:   3,
-		Username: "daniel",
-		Email:    "daniel@test.com",
-	}
-	u2 := &models.User{
-		UserID:   1,
-		Username: "jack",
-		Email:    "jack@test.com",
-	}
-	assert.False(isUserResetable(u1))
-	assert.True(isUserResetable(u2))
-	if err := config.InitByURL(DBAuthAdminsvr.URL); err != nil {
-		panic(err)
-	}
-	assert.True(isUserResetable(u1))
 }
 
 // TestMain is a sample to run an endpoint test
-func TestAll(t *testing.T) {
-	if err := config.Init(); err != nil {
-		panic(err)
-	}
-	if err := proxy.Init(); err != nil {
-		panic(err)
-	}
-	database, err := config.Database()
-	if err != nil {
-		panic(err)
-	}
-	if err := dao.InitDatabase(database); err != nil {
-		panic(err)
-	}
-
+func TestMain(t *testing.T) {
 	assert := assert.New(t)
 
 	//	v := url.Values{}
@@ -145,7 +78,68 @@ func TestAll(t *testing.T) {
 	w := httptest.NewRecorder()
 	beego.BeeApp.Handlers.ServeHTTP(w, r)
 	assert.Equal(int(200), w.Code, "'/' httpStatusCode should be 200")
-	assert.Equal(true, strings.Contains(fmt.Sprintf("%s", w.Body), "<title>Harbor</title>"), "http respond should have '<title>Harbor</title>'")
+	assert.Equal(true, strings.Contains(fmt.Sprintf("%s", w.Body), "<title>page_title_index</title>"), "http respond should have '<title>page_title_index</title>'")
+
+	r, _ = http.NewRequest("GET", "/dashboard", nil)
+	w = httptest.NewRecorder()
+	beego.BeeApp.Handlers.ServeHTTP(w, r)
+	assert.Equal(int(200), w.Code, "'/dashboard' httpStatusCode should be 200")
+	assert.Equal(true, strings.Contains(fmt.Sprintf("%s", w.Body), "<title>page_title_dashboard</title>"), "http respond should have '<title>page_title_dashboard</title>'")
+
+	r, _ = http.NewRequest("GET", "/project", nil)
+	w = httptest.NewRecorder()
+	beego.BeeApp.Handlers.ServeHTTP(w, r)
+	assert.Equal(int(200), w.Code, "'/project' httpStatusCode should be 200")
+	assert.Equal(true, strings.Contains(fmt.Sprintf("%s", w.Body), "<title>page_title_project</title>"), "http respond should have '<title>page_title_project</title>'")
+
+	r, _ = http.NewRequest("GET", "/repository", nil)
+	w = httptest.NewRecorder()
+	beego.BeeApp.Handlers.ServeHTTP(w, r)
+	assert.Equal(int(200), w.Code, "'/repository' httpStatusCode should be 200")
+	assert.Equal(true, strings.Contains(fmt.Sprintf("%s", w.Body), "<title>page_title_repository</title>"), "http respond should have '<title>page_title_repository</title>'")
+
+	r, _ = http.NewRequest("GET", "/sign_up", nil)
+	w = httptest.NewRecorder()
+	beego.BeeApp.Handlers.ServeHTTP(w, r)
+	assert.Equal(int(200), w.Code, "'/sign_up' httpStatusCode should be 200")
+	assert.Equal(true, strings.Contains(fmt.Sprintf("%s", w.Body), "<title>page_title_sign_up</title>"), "http respond should have '<title>page_title_sign_up</title>'")
+
+	r, _ = http.NewRequest("GET", "/add_new", nil)
+	w = httptest.NewRecorder()
+	beego.BeeApp.Handlers.ServeHTTP(w, r)
+	assert.Equal(int(401), w.Code, "'/add_new' httpStatusCode should be 401")
+
+	r, _ = http.NewRequest("GET", "/account_setting", nil)
+	w = httptest.NewRecorder()
+	beego.BeeApp.Handlers.ServeHTTP(w, r)
+	assert.Equal(int(302), w.Code, "'/account_setting' httpStatusCode should be 302")
+
+	r, _ = http.NewRequest("GET", "/change_password", nil)
+	w = httptest.NewRecorder()
+	beego.BeeApp.Handlers.ServeHTTP(w, r)
+	assert.Equal(int(302), w.Code, "'/change_password' httpStatusCode should be 302")
+
+	r, _ = http.NewRequest("GET", "/admin_option", nil)
+	w = httptest.NewRecorder()
+	beego.BeeApp.Handlers.ServeHTTP(w, r)
+	assert.Equal(int(302), w.Code, "'/admin_option' httpStatusCode should be 302")
+
+	r, _ = http.NewRequest("GET", "/forgot_password", nil)
+	w = httptest.NewRecorder()
+	beego.BeeApp.Handlers.ServeHTTP(w, r)
+	assert.Equal(int(200), w.Code, "'/forgot_password' httpStatusCode should be 200")
+	assert.Equal(true, strings.Contains(fmt.Sprintf("%s", w.Body), "<title>page_title_forgot_password</title>"), "http respond should have '<title>page_title_forgot_password</title>'")
+
+	r, _ = http.NewRequest("GET", "/reset_password", nil)
+	w = httptest.NewRecorder()
+	beego.BeeApp.Handlers.ServeHTTP(w, r)
+	assert.Equal(int(302), w.Code, "'/reset_password' httpStatusCode should be 302")
+
+	r, _ = http.NewRequest("GET", "/search", nil)
+	w = httptest.NewRecorder()
+	beego.BeeApp.Handlers.ServeHTTP(w, r)
+	assert.Equal(int(200), w.Code, "'/search' httpStatusCode should be 200")
+	assert.Equal(true, strings.Contains(fmt.Sprintf("%s", w.Body), "<title>page_title_search</title>"), "http respond should have '<title>page_title_searc</title>'")
 
 	r, _ = http.NewRequest("POST", "/login", nil)
 	w = httptest.NewRecorder()
@@ -173,18 +167,37 @@ func TestAll(t *testing.T) {
 	beego.BeeApp.Handlers.ServeHTTP(w, r)
 	assert.Equal(int(400), w.Code, "'/sendEmail' httpStatusCode should be 400")
 
-	r, _ = http.NewRequest("GET", "/registryproxy/v2/", nil)
+	r, _ = http.NewRequest("GET", "/language", nil)
 	w = httptest.NewRecorder()
 	beego.BeeApp.Handlers.ServeHTTP(w, r)
-	assert.Equal(int(200), w.Code, "ping v2 should get a 200 response")
+	assert.Equal(int(302), w.Code, "'/language' httpStatusCode should be 302")
 
-	r, _ = http.NewRequest("GET", "/registryproxy/v2/noproject/manifests/1.0", nil)
+	r, _ = http.NewRequest("GET", "/optional_menu", nil)
 	w = httptest.NewRecorder()
 	beego.BeeApp.Handlers.ServeHTTP(w, r)
-	assert.Equal(int(400), w.Code, "GET v2/noproject/manifests/1.0 should get a 400 response")
+	//fmt.Printf("/optional_menu: %s\n", w.Body)
+	assert.Equal(int(200), w.Code, "'/optional_menu' httpStatusCode should be 200")
+	//assert.Equal(true, strings.Contains(fmt.Sprintf("%s", w.Body), "<title> </title>"), "http respond should have '<title> </title>'")
 
-	r, _ = http.NewRequest("GET", "/registryproxy/v2/project/notexist/manifests/1.0", nil)
+	r, _ = http.NewRequest("GET", "/navigation_header", nil)
 	w = httptest.NewRecorder()
 	beego.BeeApp.Handlers.ServeHTTP(w, r)
-	assert.Equal(int(404), w.Code, "GET v2/noproject/manifests/1.0 should get a 404 response")
+	//fmt.Printf("/navigation_header: %s\n", w.Body)
+	assert.Equal(int(200), w.Code, "'/navigation_header' httpStatusCode should be 200")
+	//assert.Equal(true, strings.Contains(fmt.Sprintf("%s", w.Body), "<title> </title>"), "http respond should have '<title> </title>'")
+
+	r, _ = http.NewRequest("GET", "/navigation_detail", nil)
+	w = httptest.NewRecorder()
+	beego.BeeApp.Handlers.ServeHTTP(w, r)
+	//fmt.Printf("/navigation_detail: %s\n", w.Body)
+	assert.Equal(int(200), w.Code, "'/navigation_detail' httpStatusCode should be 200")
+	//assert.Equal(true, strings.Contains(fmt.Sprintf("%s", w.Body), "<title> </title>"), "http respond should have '<title> </title>'")
+
+	r, _ = http.NewRequest("GET", "/sign_in", nil)
+	w = httptest.NewRecorder()
+	beego.BeeApp.Handlers.ServeHTTP(w, r)
+	//fmt.Printf("/sign_in: %s\n", w.Body)
+	assert.Equal(int(200), w.Code, "'/sign_in' httpStatusCode should be 200")
+	//assert.Equal(true, strings.Contains(fmt.Sprintf("%s", w.Body), "<title> </title>"), "http respond should have '<title> </title>'")
+
 }

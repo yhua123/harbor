@@ -42,18 +42,15 @@ flag=$base_dir/cert_gen_type
 #The location of harbor.cfg
 cfg=$base_dir/harbor/harbor.cfg
 
-#Format cert file
-function formatCert {
-	content=$1
-	file=$2
-	echo $content | sed -r "s/ /\n/g" | sed -r "/-+$/d" | sed -r "s/^(-+).*/& CERTIFICATE\1/g" > $file
-}
-
-#Format key file
-function formatKey {
-	content=$1
-	file=$2
-	echo $content | sed -r "s/ /\n/g" | sed -r "/^PRIVATE$/d"| sed -r "/-+$/d" | sed -r "s/^(-+).*/& PRIVATE KEY\1/g" > $file
+#Format cert and key files
+function format {
+	file=$1
+	head=$(sed -rn 's/(-+[A-Za-z ]*-+)([^-]*)(-+[A-Za-z ]*-+)/\1/p' $file)
+	body=$(sed -rn 's/(-+[A-Za-z ]*-+)([^-]*)(-+[A-Za-z ]*-+)/\2/p' $file)
+	tail=$(sed -rn 's/(-+[A-Za-z ]*-+)([^-]*)(-+[A-Za-z ]*-+)/\3/p' $file)
+	echo $head > $file
+	echo $body | sed  's/\s\+/\n/g' >> $file
+	echo $tail >> $file
 }
 
 function genCert {
@@ -84,8 +81,10 @@ function secure {
 	if [ -n "$ssl_cert" ] && [ -n "$ssl_cert_key" ]
 	then
 		echo "ssl_cert and ssl_cert_key are both set, using customized certificate"
-		formatCert "$ssl_cert" $cert
-		formatKey "$ssl_cert_key" $key
+		echo $ssl_cert > $cert
+		format $cert
+		echo $ssl_cert_key > $key
+		format $key
 		echo "customized" > $flag
 		return
 	fi

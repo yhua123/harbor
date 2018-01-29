@@ -1,39 +1,65 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+   Copyright (c) 2016 VMware, Inc. All Rights Reserved.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
 
 package api
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/vmware/harbor/src/common/dao"
 	"github.com/vmware/harbor/src/common/models"
-	"github.com/vmware/harbor/src/common/notifier"
 	"github.com/vmware/harbor/src/common/utils"
-	"github.com/vmware/harbor/src/common/utils/clair"
-	registry_error "github.com/vmware/harbor/src/common/utils/error"
 	"github.com/vmware/harbor/src/common/utils/log"
 	"github.com/vmware/harbor/src/common/utils/registry"
-	"github.com/vmware/harbor/src/common/utils/registry/auth"
+	registry_error "github.com/vmware/harbor/src/common/utils/registry/error"
 	"github.com/vmware/harbor/src/ui/config"
-	"github.com/vmware/harbor/src/ui/promgr"
-	"github.com/vmware/harbor/src/ui/service/token"
-	uiutils "github.com/vmware/harbor/src/ui/utils"
+	"github.com/vmware/harbor/src/ui/service/cache"
 )
+
+func checkProjectPermission(userID int, projectID int64) bool {
+	roles, err := listRoles(userID, projectID)
+	if err != nil {
+		log.Errorf("error occurred in getProjectPermission: %v", err)
+		return false
+	}
+	return len(roles) > 0
+}
+
+func hasProjectAdminRole(userID int, projectID int64) bool {
+	roles, err := listRoles(userID, projectID)
+	if err != nil {
+		log.Errorf("error occurred in getProjectPermission: %v", err)
+		return false
+	}
+
+	for _, role := range roles {
+		if role.RoleID == models.PROJECTADMIN {
+			return true
+		}
+	}
+
+	return false
+}
 
 //sysadmin has all privileges to all projects
 func listRoles(userID int, projectID int64) ([]models.Role, error) {
@@ -74,10 +100,149 @@ func checkUserExists(name string) int {
 	return 0
 }
 
-// SyncRegistry syncs the repositories of registry with database.
-func SyncRegistry(pm promgr.ProjectManager) error {
+// TriggerReplication triggers the replication according to the policy
+func TriggerReplication(policyID int64, repository string,
+	tags []string, operation string) error {
+	data := struct {
+		PolicyID  int64    `json:"policy_id"`
+		Repo      string   `json:"repository"`
+		Operation string   `json:"operation"`
+		TagList   []string `json:"tags"`
+	}{
+		PolicyID:  policyID,
+		Repo:      repository,
+		TagList:   tags,
+		Operation: operation,
+	}
 
-	log.Infof("Start syncing repositories from registry to DB... ")
+	b, err := json.Marshal(&data)
+	if err != nil {
+		return err
+	}
+
+	url := buildReplicationURL()
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(b))
+	if err != nil {
+		return err
+	}
+	addAuthentication(req)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+
+	b, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	return fmt.Errorf("%d %s", resp.StatusCode, string(b))
+}
+
+// GetPoliciesByRepository returns policies according the repository
+func GetPoliciesByRepository(repository string) ([]*models.RepPolicy, error) {
+	repository = strings.TrimSpace(repository)
+	repository = strings.TrimRight(repository, "/")
+	projectName, _ := utils.ParseRepository(repository)
+
+	project, err := dao.GetProjectByName(projectName)
+	if err != nil {
+		return nil, err
+	}
+
+	policies, err := dao.GetRepPolicyByProject(project.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+
+	return policies, nil
+}
+
+// TriggerReplicationByRepository triggers the replication according to the repository
+func TriggerReplicationByRepository(repository string, tags []string, operation string) {
+	policies, err := GetPoliciesByRepository(repository)
+	if err != nil {
+		log.Errorf("failed to get policies for repository %s: %v", repository, err)
+		return
+	}
+
+	for _, policy := range policies {
+		if policy.Enabled == 0 {
+			continue
+		}
+		if err := TriggerReplication(policy.ID, repository, tags, operation); err != nil {
+			log.Errorf("failed to trigger replication of policy %d for %s: %v", policy.ID, repository, err)
+		} else {
+			log.Infof("replication of policy %d for %s triggered", policy.ID, repository)
+		}
+	}
+}
+
+func postReplicationAction(policyID int64, acton string) error {
+	data := struct {
+		PolicyID int64  `json:"policy_id"`
+		Action   string `json:"action"`
+	}{
+		PolicyID: policyID,
+		Action:   acton,
+	}
+
+	b, err := json.Marshal(&data)
+	if err != nil {
+		return err
+	}
+
+	url := buildReplicationActionURL()
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(b))
+	if err != nil {
+		return err
+	}
+
+	addAuthentication(req)
+
+	client := &http.Client{}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+
+	b, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	return fmt.Errorf("%d %s", resp.StatusCode, string(b))
+}
+
+func addAuthentication(req *http.Request) {
+	if req != nil {
+		req.AddCookie(&http.Cookie{
+			Name:  models.UISecretCookie,
+			Value: config.UISecret(),
+		})
+	}
+}
+
+// SyncRegistry syncs the repositories of registry with database.
+func SyncRegistry() error {
+
+	log.Debugf("Start syncing repositories from registry to DB... ")
 
 	reposInRegistry, err := catalog()
 	if err != nil {
@@ -85,7 +250,7 @@ func SyncRegistry(pm promgr.ProjectManager) error {
 		return err
 	}
 
-	var repoRecordsInDB []*models.RepoRecord
+	var repoRecordsInDB []models.RepoRecord
 	repoRecordsInDB, err = dao.GetAllRepositories()
 	if err != nil {
 		log.Errorf("error occurred while getting all registories. %v", err)
@@ -99,7 +264,7 @@ func SyncRegistry(pm promgr.ProjectManager) error {
 
 	var reposToAdd []string
 	var reposToDel []string
-	reposToAdd, reposToDel, err = diffRepos(reposInRegistry, reposInDB, pm)
+	reposToAdd, reposToDel, err = diffRepos(reposInRegistry, reposInDB)
 	if err != nil {
 		return err
 	}
@@ -108,21 +273,18 @@ func SyncRegistry(pm promgr.ProjectManager) error {
 		log.Debugf("Start adding repositories into DB... ")
 		for _, repoToAdd := range reposToAdd {
 			project, _ := utils.ParseRepository(repoToAdd)
+			user, err := dao.GetAccessLogCreator(repoToAdd)
+			if err != nil {
+				log.Errorf("Error happens when getting the repository owner from access log: %v", err)
+			}
+			if len(user) == 0 {
+				user = "anonymous"
+			}
 			pullCount, err := dao.CountPull(repoToAdd)
 			if err != nil {
 				log.Errorf("Error happens when counting pull count from access log: %v", err)
 			}
-			pro, err := pm.Get(project)
-			if err != nil {
-				log.Errorf("failed to get project %s: %v", project, err)
-				continue
-			}
-			repoRecord := models.RepoRecord{
-				Name:      repoToAdd,
-				ProjectID: pro.ProjectID,
-				PullCount: pullCount,
-			}
-
+			repoRecord := models.RepoRecord{Name: repoToAdd, OwnerName: user, ProjectName: project, PullCount: pullCount}
 			if err := dao.AddRepository(repoRecord); err != nil {
 				log.Errorf("Error happens when adding the missing repository: %v", err)
 			} else {
@@ -142,7 +304,7 @@ func SyncRegistry(pm promgr.ProjectManager) error {
 		}
 	}
 
-	log.Infof("Sync repositories from registry to DB is done.")
+	log.Debugf("Sync repositories from registry to DB is done.")
 	return nil
 }
 
@@ -162,8 +324,7 @@ func catalog() ([]string, error) {
 	return repositories, nil
 }
 
-func diffRepos(reposInRegistry []string, reposInDB []string,
-	pm promgr.ProjectManager) ([]string, []string, error) {
+func diffRepos(reposInRegistry []string, reposInDB []string) ([]string, []string, error) {
 	var needsAdd []string
 	var needsDel []string
 
@@ -178,7 +339,7 @@ func diffRepos(reposInRegistry []string, reposInDB []string,
 		d := strings.Compare(repoInR, repoInD)
 		if d < 0 {
 			i++
-			exist, err := projectExists(pm, repoInR)
+			exist, err := projectExists(repoInR)
 			if err != nil {
 				log.Errorf("failed to check the existence of project %s: %v", repoInR, err)
 				continue
@@ -189,7 +350,9 @@ func diffRepos(reposInRegistry []string, reposInDB []string,
 			}
 
 			// TODO remove the workaround when the bug of registry is fixed
-			client, err := uiutils.NewRepositoryClientForUI("harbor-ui", repoInR)
+			endpoint := config.InternalRegistryURL()
+			client, err := cache.NewRepositoryClient(endpoint, true,
+				"admin", repoInR, "repository", repoInR)
 			if err != nil {
 				return needsAdd, needsDel, err
 			}
@@ -209,7 +372,9 @@ func diffRepos(reposInRegistry []string, reposInDB []string,
 			j++
 		} else {
 			// TODO remove the workaround when the bug of registry is fixed
-			client, err := uiutils.NewRepositoryClientForUI("harbor-ui", repoInR)
+			endpoint := config.InternalRegistryURL()
+			client, err := cache.NewRepositoryClient(endpoint, true,
+				"admin", repoInR, "repository", repoInR)
 			if err != nil {
 				return needsAdd, needsDel, err
 			}
@@ -231,7 +396,7 @@ func diffRepos(reposInRegistry []string, reposInDB []string,
 	for i < len(reposInRegistry) {
 		repoInR = reposInRegistry[i]
 		i++
-		exist, err := projectExists(pm, repoInR)
+		exist, err := projectExists(repoInR)
 		if err != nil {
 			log.Errorf("failed to check whether project of %s exists: %v", repoInR, err)
 			continue
@@ -240,23 +405,6 @@ func diffRepos(reposInRegistry []string, reposInDB []string,
 		if !exist {
 			continue
 		}
-
-		client, err := uiutils.NewRepositoryClientForUI("harbor-ui", repoInR)
-		if err != nil {
-			log.Errorf("failed to create repository client: %v", err)
-			continue
-		}
-
-		exist, err = repositoryExist(repoInR, client)
-		if err != nil {
-			log.Errorf("failed to check the existence of repository %s: %v", repoInR, err)
-			continue
-		}
-
-		if !exist {
-			continue
-		}
-
 		needsAdd = append(needsAdd, repoInR)
 	}
 
@@ -268,30 +416,46 @@ func diffRepos(reposInRegistry []string, reposInDB []string,
 	return needsAdd, needsDel, nil
 }
 
-func projectExists(pm promgr.ProjectManager, repository string) (bool, error) {
+func projectExists(repository string) (bool, error) {
 	project, _ := utils.ParseRepository(repository)
-	return pm.Exists(project)
+	return dao.ProjectExists(project)
 }
 
 func initRegistryClient() (r *registry.Registry, err error) {
-	endpoint, err := config.RegistryURL()
+	endpoint := config.InternalRegistryURL()
+
+	addr := endpoint
+	if strings.Contains(endpoint, "/") {
+		addr = endpoint[strings.LastIndex(endpoint, "/")+1:]
+	}
+
+	ch := make(chan int, 1)
+	go func() {
+		var err error
+		var c net.Conn
+		for {
+			c, err = net.DialTimeout("tcp", addr, 20*time.Second)
+			if err == nil {
+				c.Close()
+				ch <- 1
+			} else {
+				log.Errorf("failed to connect to registry client, retry after 2 seconds :%v", err)
+				time.Sleep(2 * time.Second)
+			}
+		}
+	}()
+	select {
+	case <-ch:
+	case <-time.After(60 * time.Second):
+		panic("Failed to connect to registry client after 60 seconds")
+	}
+
+	registryClient, err := cache.NewRegistryClient(endpoint, true, "admin",
+		"registry", "catalog", "*")
 	if err != nil {
 		return nil, err
 	}
-
-	addr := endpoint
-	if strings.Contains(endpoint, "://") {
-		addr = strings.Split(endpoint, "://")[1]
-	}
-
-	if err := utils.TestTCPConn(addr, 60, 2); err != nil {
-		return nil, err
-	}
-
-	authorizer := auth.NewRawTokenAuthorizer("harbor-ui", token.Registry)
-	return registry.NewRegistry(endpoint, &http.Client{
-		Transport: registry.NewTransport(registry.GetHTTPTransport(), authorizer),
-	})
+	return registryClient, nil
 }
 
 func buildReplicationURL() string {
@@ -299,9 +463,9 @@ func buildReplicationURL() string {
 	return fmt.Sprintf("%s/api/jobs/replication", url)
 }
 
-func buildJobLogURL(jobID string, jobType string) string {
+func buildJobLogURL(jobID string) string {
 	url := config.InternalJobServiceURL()
-	return fmt.Sprintf("%s/api/jobs/%s/%s/log", url, jobType, jobID)
+	return fmt.Sprintf("%s/api/jobs/replication/%s/log", url, jobID)
 }
 
 func buildReplicationActionURL() string {
@@ -309,51 +473,39 @@ func buildReplicationActionURL() string {
 	return fmt.Sprintf("%s/api/jobs/replication/actions", url)
 }
 
+func getReposByProject(name string, keyword ...string) ([]string, error) {
+	repositories := []string{}
+
+	repos, err := dao.GetRepositoryByProjectName(name)
+	if err != nil {
+		return repositories, err
+	}
+
+	needMatchKeyword := len(keyword) > 0 && len(keyword[0]) != 0
+
+	for _, repo := range repos {
+		if needMatchKeyword &&
+			!strings.Contains(repo.Name, keyword[0]) {
+			continue
+		}
+
+		repositories = append(repositories, repo.Name)
+	}
+
+	return repositories, nil
+}
+
+func getAllRepos() ([]string, error) {
+	return cache.GetRepoFromCache()
+}
+
 func repositoryExist(name string, client *registry.Repository) (bool, error) {
 	tags, err := client.ListTag()
 	if err != nil {
-		if regErr, ok := err.(*registry_error.HTTPError); ok && regErr.StatusCode == http.StatusNotFound {
+		if regErr, ok := err.(*registry_error.Error); ok && regErr.StatusCode == http.StatusNotFound {
 			return false, nil
 		}
 		return false, err
 	}
 	return len(tags) != 0, nil
-}
-
-// transformVulnerabilities transforms the returned value of Clair API to a list of VulnerabilityItem
-func transformVulnerabilities(layerWithVuln *models.ClairLayerEnvelope) []*models.VulnerabilityItem {
-	res := []*models.VulnerabilityItem{}
-	l := layerWithVuln.Layer
-	if l == nil {
-		return res
-	}
-	features := l.Features
-	if features == nil {
-		return res
-	}
-	for _, f := range features {
-		vulnerabilities := f.Vulnerabilities
-		if vulnerabilities == nil {
-			continue
-		}
-		for _, v := range vulnerabilities {
-			vItem := &models.VulnerabilityItem{
-				ID:          v.Name,
-				Pkg:         f.Name,
-				Version:     f.Version,
-				Severity:    clair.ParseClairSev(v.Severity),
-				Fixed:       v.FixedBy,
-				Link:        v.Link,
-				Description: v.Description,
-			}
-			res = append(res, vItem)
-		}
-	}
-	return res
-}
-
-//Watch the configuration changes.
-//Wrap the same method in common utils.
-func watchConfigChanges(cfg map[string]interface{}) error {
-	return notifier.WatchConfigChanges(cfg)
 }

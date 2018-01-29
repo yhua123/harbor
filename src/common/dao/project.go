@@ -1,27 +1,27 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+   Copyright (c) 2016 VMware, Inc. All Rights Reserved.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
 
 package dao
 
 import (
-	"github.com/vmware/harbor/src/common"
 	"github.com/vmware/harbor/src/common/models"
 
 	"fmt"
 	"time"
 
-	//"github.com/vmware/harbor/src/common/utils/log"
+	"github.com/vmware/harbor/src/common/utils/log"
 )
 
 //TODO:transaction, return err
@@ -30,13 +30,13 @@ import (
 func AddProject(project models.Project) (int64, error) {
 
 	o := GetOrmer()
-	p, err := o.Raw("insert into project (owner_id, name, creation_time, update_time, deleted) values (?, ?, ?, ?, ?)").Prepare()
+	p, err := o.Raw("insert into project (owner_id, name, creation_time, update_time, deleted, public) values (?, ?, ?, ?, ?, ?)").Prepare()
 	if err != nil {
 		return 0, err
 	}
 
 	now := time.Now()
-	r, err := p.Exec(project.OwnerID, project.Name, now, now, project.Deleted)
+	r, err := p.Exec(project.OwnerID, project.Name, now, now, project.Deleted, project.Public)
 	if err != nil {
 		return 0, err
 	}
@@ -46,15 +46,57 @@ func AddProject(project models.Project) (int64, error) {
 		return 0, err
 	}
 
-	err = AddProjectMember(projectID, project.OwnerID, models.PROJECTADMIN)
+	if err = AddProjectMember(projectID, project.OwnerID, models.PROJECTADMIN); err != nil {
+		return projectID, err
+	}
+
+	accessLog := models.AccessLog{UserID: project.OwnerID, ProjectID: projectID, RepoName: project.Name + "/", RepoTag: "N/A", GUID: "N/A", Operation: "create", OpTime: time.Now()}
+	err = AddAccessLog(accessLog)
+
 	return projectID, err
+}
+
+// IsProjectPublic ...
+func IsProjectPublic(projectName string) bool {
+	project, err := GetProjectByName(projectName)
+	if err != nil {
+		log.Errorf("Error occurred in GetProjectByName: %v", err)
+		return false
+	}
+	if project == nil {
+		return false
+	}
+	return project.Public == 1
+}
+
+//ProjectExists returns whether the project exists according to its name of ID.
+func ProjectExists(nameOrID interface{}) (bool, error) {
+	o := GetOrmer()
+	type dummy struct{}
+	sql := `select project_id from project where deleted = 0 and `
+	switch nameOrID.(type) {
+	case int64:
+		sql += `project_id = ?`
+	case string:
+		sql += `name = ?`
+	default:
+		return false, fmt.Errorf("Invalid nameOrId: %v", nameOrID)
+	}
+
+	var d []dummy
+	num, err := o.Raw(sql, nameOrID).QueryRows(&d)
+	if err != nil {
+		return false, err
+	}
+	return num > 0, nil
+
 }
 
 // GetProjectByID ...
 func GetProjectByID(id int64) (*models.Project, error) {
 	o := GetOrmer()
 
-	sql := `select p.project_id, p.name, u.username as owner_name, p.owner_id, p.creation_time, p.update_time  
+	sql := `select p.project_id, p.name, u.username as owner_name, p.owner_id, p.creation_time, p.update_time, p.public  
 		from project p left join user u on p.owner_id = u.user_id where p.deleted = 0 and p.project_id = ?`
 	queryParam := make([]interface{}, 1)
 	queryParam = append(queryParam, id)
@@ -89,116 +131,150 @@ func GetProjectByName(name string) (*models.Project, error) {
 	return &p[0], nil
 }
 
-// GetTotalOfProjects returns the total count of projects
-// according to the query conditions
-func GetTotalOfProjects(query *models.ProjectQueryParam) (int64, error) {
-	var pagination *models.Pagination
-	if query != nil {
-		pagination = query.Pagination
-		query.Pagination = nil
-	}
-	sql, params := projectQueryConditions(query)
-	if query != nil {
-		query.Pagination = pagination
+// GetPermission gets roles that the user has according to the project.
+func GetPermission(username, projectName string) (string, error) {
+	o := GetOrmer()
+
+	sql := `select r.role_code from role as r
+		inner join project_member as pm on r.role_id = pm.role
+		inner join user as u on u.user_id = pm.user_id
+		inner join project p on p.project_id = pm.project_id
+		where u.username = ? and p.name = ? and u.deleted = 0 and p.deleted = 0`
+
+	var r []models.Role
+	n, err := o.Raw(sql, username, projectName).QueryRows(&r)
+	if err != nil {
+		return "", err
 	}
 
-	sql = `select count(*) ` + sql
+	if n == 0 {
+		return "", nil
+	}
+
+	return r[0].RoleCode, nil
+}
+
+// ToggleProjectPublicity toggles the publicity of the project.
+func ToggleProjectPublicity(projectID int64, publicity int) error {
+	o := GetOrmer()
+	sql := "update project set public = ? where project_id = ?"
+	_, err := o.Raw(sql, publicity, projectID).Exec()
+	return err
+}
+
+// SearchProjects returns a project list,
+// which satisfies the following conditions:
+// 1. the project is not deleted
+// 2. the prject is public or the user is a member of the project
+func SearchProjects(userID int) ([]models.Project, error) {
+	o := GetOrmer()
+	sql := `select distinct p.project_id, p.name, p.public 
+		from project p 
+		left join project_member pm on p.project_id = pm.project_id 
+		where (pm.user_id = ? or p.public = 1) and p.deleted = 0`
+
+	var projects []models.Project
+
+	if _, err := o.Raw(sql, userID).QueryRows(&projects); err != nil {
+		return nil, err
+	}
+
+	return projects, nil
+}
+
+//GetTotalOfUserRelevantProjects returns the total count of
+// user relevant projects
+func GetTotalOfUserRelevantProjects(userID int, projectName string) (int64, error) {
+	o := GetOrmer()
+	sql := `select count(*) from project p 
+			left join project_member pm 
+			on p.project_id = pm.project_id
+	 		where p.deleted = 0 and pm.user_id= ?`
+
+	queryParam := []interface{}{}
+	queryParam = append(queryParam, userID)
+	if projectName != "" {
+		sql += " and p.name like ? "
+		queryParam = append(queryParam, "%"+escape(projectName)+"%")
+	}
 
 	var total int64
-	err := GetOrmer().Raw(sql, params).QueryRow(&total)
+	err := o.Raw(sql, queryParam).QueryRow(&total)
+
 	return total, err
 }
 
-// GetProjects returns a project list according to the query conditions
-func GetProjects(query *models.ProjectQueryParam) ([]*models.Project, error) {
-	sql, params := projectQueryConditions(query)
-
-	sql = `select distinct p.project_id, p.name, p.owner_id, 
-				p.creation_time, p.update_time ` + sql
-
-	var projects []*models.Project
-	_, err := GetOrmer().Raw(sql, params).QueryRows(&projects)
-	return projects, err
+// GetUserRelevantProjects returns the user relevant projects
+// args[0]: public, args[1]: limit, args[2]: offset
+func GetUserRelevantProjects(userID int, projectName string, args ...int64) ([]models.Project, error) {
+	return getProjects(userID, projectName, args...)
 }
 
-func projectQueryConditions(query *models.ProjectQueryParam) (string, []interface{}) {
-	params := []interface{}{}
+// GetTotalOfProjects returns the total count of projects
+func GetTotalOfProjects(name string, public ...int) (int64, error) {
+	qs := GetOrmer().
+		QueryTable(new(models.Project)).
+		Filter("Deleted", 0)
 
-	sql := ` from project as p`
-
-	if query == nil {
-		sql += ` where p.deleted=0 order by p.name`
-		return sql, params
+	if len(name) > 0 {
+		qs = qs.Filter("Name__icontains", name)
 	}
 
-	// if query.ProjectIDs is not nil but has no element, the query will returns no rows
-	if query.ProjectIDs != nil && len(query.ProjectIDs) == 0 {
-		sql += ` where 1 = 0`
-		return sql, params
+	if len(public) > 0 {
+		qs = qs.Filter("Public", public[0])
 	}
 
-	if len(query.Owner) != 0 {
-		sql += ` join user u1
-					on p.owner_id = u1.user_id`
+	return qs.Count()
+}
+
+// GetProjects returns project list
+// args[0]: public, args[1]: limit, args[2]: offset
+func GetProjects(name string, args ...int64) ([]models.Project, error) {
+	return getProjects(0, name, args...)
+}
+
+func getProjects(userID int, name string, args ...int64) ([]models.Project, error) {
+	projects := []models.Project{}
+
+	o := GetOrmer()
+	sql := ""
+	queryParam := []interface{}{}
+
+	if userID != 0 { //get user's projects
+		sql = `select distinct p.project_id, p.owner_id, p.name, 
+					p.creation_time, p.update_time, p.public, pm.role role 
+			from project p 
+			left join project_member pm 
+			on p.project_id = pm.project_id
+	 		where p.deleted = 0 and pm.user_id= ?`
+		queryParam = append(queryParam, userID)
+	} else { // get all projects
+		sql = `select * from project p where p.deleted = 0 `
 	}
 
-	if query.Member != nil && len(query.Member.Name) != 0 {
-		sql += ` join project_member pm
-					on p.project_id = pm.project_id
-					join user u2
-					on pm.user_id=u2.user_id`
-	}
-	sql += ` where p.deleted=0`
-
-	if len(query.Owner) != 0 {
-		sql += ` and u1.username=?`
-		params = append(params, query.Owner)
+	if name != "" {
+		sql += ` and p.name like ? `
+		queryParam = append(queryParam, "%"+escape(name)+"%")
 	}
 
-	if len(query.Name) != 0 {
-		sql += ` and p.name like ?`
-		params = append(params, "%"+escape(query.Name)+"%")
+	switch len(args) {
+	case 1:
+		sql += ` and p.public = ?`
+		queryParam = append(queryParam, args[0])
+		sql += ` order by p.name `
+	case 2:
+		sql += ` order by p.name `
+		sql = paginateForRawSQL(sql, args[0], args[1])
+	case 3:
+		sql += ` and p.public = ?`
+		queryParam = append(queryParam, args[0])
+		sql += ` order by p.name `
+		sql = paginateForRawSQL(sql, args[1], args[2])
 	}
 
-	if query.Member != nil && len(query.Member.Name) != 0 {
-		sql += ` and u2.username=?`
-		params = append(params, query.Member.Name)
+	_, err := o.Raw(sql, queryParam).QueryRows(&projects)
 
-		if query.Member.Role > 0 {
-			sql += ` and pm.role = ?`
-			roleID := 0
-			switch query.Member.Role {
-			case common.RoleProjectAdmin:
-				roleID = 1
-			case common.RoleDeveloper:
-				roleID = 2
-			case common.RoleGuest:
-				roleID = 3
-
-			}
-			params = append(params, roleID)
-		}
-	}
-
-	if len(query.ProjectIDs) > 0 {
-		sql += fmt.Sprintf(` and p.project_id in ( %s )`,
-			paramPlaceholder(len(query.ProjectIDs)))
-		params = append(params, query.ProjectIDs)
-	}
-
-	sql += ` order by p.name`
-
-	if query.Pagination != nil && query.Pagination.Size > 0 {
-		sql += ` limit ?`
-		params = append(params, query.Pagination.Size)
-
-		if query.Pagination.Page > 0 {
-			sql += ` offset ?`
-			params = append(params, (query.Pagination.Page-1)*query.Pagination.Size)
-		}
-	}
-
-	return sql, params
+	return projects, err
 }
 
 // DeleteProject ...

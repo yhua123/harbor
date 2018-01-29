@@ -1,16 +1,17 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+   Copyright (c) 2016 VMware, Inc. All Rights Reserved.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
 
 package registry
 
@@ -25,7 +26,7 @@ import (
 	"testing"
 
 	"github.com/docker/distribution/manifest/schema2"
-	registry_error "github.com/vmware/harbor/src/common/utils/error"
+	registry_error "github.com/vmware/harbor/src/common/utils/registry/error"
 	"github.com/vmware/harbor/src/common/utils/test"
 )
 
@@ -42,6 +43,14 @@ var (
 
 	digest = "sha256:6c3c624b58dbbcd3c0dd82b4c53f04194d1247c6eebdaab7c610cf7d66709b3b"
 )
+
+func TestNewRepositoryWithModifiers(t *testing.T) {
+	_, err := NewRepositoryWithModifiers("library/ubuntu",
+		"http://registry.org", true, nil)
+	if err != nil {
+		t.Fatalf("failed to create client for repository: %v", err)
+	}
+}
 
 func TestBlobExist(t *testing.T) {
 	handler := func(w http.ResponseWriter, r *http.Request) {
@@ -388,10 +397,10 @@ func TestListTag(t *testing.T) {
 
 func TestParseError(t *testing.T) {
 	err := &url.Error{
-		Err: &registry_error.HTTPError{},
+		Err: &registry_error.Error{},
 	}
 	e := parseError(err)
-	if _, ok := e.(*registry_error.HTTPError); !ok {
+	if _, ok := e.(*registry_error.Error); !ok {
 		t.Errorf("error type does not match registry error")
 	}
 }

@@ -1,16 +1,17 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+   Copyright (c) 2016 VMware, Inc. All Rights Reserved.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
 
 package dao
 
@@ -18,8 +19,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-
-	"github.com/astaxie/beego/orm"
 
 	"github.com/vmware/harbor/src/common/models"
 	"github.com/vmware/harbor/src/common/utils"
@@ -52,11 +51,6 @@ func GetUser(query models.User) (*models.User, error) {
 		queryParam = append(queryParam, query.ResetUUID)
 	}
 
-	if query.Email != "" {
-		sql += ` and email = ? `
-		queryParam = append(queryParam, query.Email)
-	}
-
 	var u []models.User
 	n, err := o.Raw(sql, queryParam).QueryRows(&u)
 
@@ -65,10 +59,6 @@ func GetUser(query models.User) (*models.User, error) {
 	}
 	if n == 0 {
 		return nil, nil
-	}
-
-	if n > 1 {
-		return nil, fmt.Errorf("got more than one user when executing: %s param: %v", sql, queryParam)
 	}
 
 	return &u[0], nil
@@ -99,38 +89,24 @@ func LoginByDb(auth models.AuthModel) (*models.User, error) {
 	return &user, nil
 }
 
-// GetTotalOfUsers ...
-func GetTotalOfUsers(query *models.UserQuery) (int64, error) {
-	return userQueryConditions(query).Count()
-}
-
 // ListUsers lists all users according to different conditions.
-func ListUsers(query *models.UserQuery) ([]models.User, error) {
-	users := []models.User{}
-	_, err := userQueryConditions(query).Limit(-1).
-		OrderBy("username").
-		All(&users)
-	return users, err
-}
+func ListUsers(query models.User) ([]models.User, error) {
+	o := GetOrmer()
+	u := []models.User{}
+	sql := `select  user_id, username, email, realname, comment, reset_uuid, salt,
+		sysadmin_flag, creation_time, update_time
+		from user u
+		where u.deleted = 0 and u.user_id != 1 `
 
-func userQueryConditions(query *models.UserQuery) orm.QuerySeter {
-	qs := GetOrmer().QueryTable(&models.User{}).
-		Filter("deleted", 0).
-		Filter("user_id__gt", 1)
-
-	if query == nil {
-		return qs
+	queryParam := make([]interface{}, 1)
+	if query.Username != "" {
+		sql += ` and username like ? `
+		queryParam = append(queryParam, "%"+escape(query.Username)+"%")
 	}
+	sql += ` order by user_id desc `
 
-	if len(query.Username) > 0 {
-		qs = qs.Filter("username__contains", query.Username)
-	}
-
-	if len(query.Email) > 0 {
-		qs = qs.Filter("email__contains", query.Email)
-	}
-
-	return qs
+	_, err := o.Raw(sql, queryParam).QueryRows(&u)
+	return u, err
 }
 
 // ToggleUserAdminRole gives a user admin role.
@@ -257,62 +233,11 @@ func DeleteUser(userID int) error {
 	return err
 }
 
-// ChangeUserProfile - Update user in local db,
-// cols to specify the columns need to update,
-// Email, and RealName, Comment are updated by default.
-func ChangeUserProfile(user models.User, cols ...string) error {
+// ChangeUserProfile ...
+func ChangeUserProfile(user models.User) error {
 	o := GetOrmer()
-	if len(cols) == 0 {
-		cols = []string{"Email", "Realname", "Comment"}
-	}
-	if _, err := o.Update(&user, cols...); err != nil {
+	if _, err := o.Update(&user, "Email", "Realname", "Comment"); err != nil {
 		log.Errorf("update user failed, error: %v", err)
-		return err
-	}
-	return nil
-}
-
-// OnBoardUser will check if a user exists in user table, if not insert the user and
-// put the id in the pointer of user model, if it does exist, return the user's profile.
-// This is used for ldap and uaa authentication, such the user can have an ID in Harbor.
-func OnBoardUser(u *models.User) error {
-	o := GetOrmer()
-	created, id, err := o.ReadOrCreate(u, "Username")
-	if err != nil {
-		return err
-	}
-	if created {
-		u.UserID = int(id)
-	} else {
-		existing, err := GetUser(*u)
-		if err != nil {
-			return err
-		}
-		u.Email = existing.Email
-		u.HasAdminRole = existing.HasAdminRole
-		u.Realname = existing.Realname
-		u.UserID = existing.UserID
-	}
-	return nil
-}
-
-//IsSuperUser checks if the user is super user(conventionally id == 1) of Harbor
-func IsSuperUser(username string) bool {
-	u, err := GetUser(models.User{
-		Username: username,
-	})
-	log.Debugf("Check if user %s is super user", username)
-	if err != nil {
-		log.Errorf("Failed to get user from DB, username: %s, error: %v", username, err)
-		return false
-	}
-	return u != nil && u.UserID == 1
-}
-
-//CleanUser - Clean this user information from DB
-func CleanUser(id int64) error {
-	if _, err := GetOrmer().QueryTable(&models.User{}).
-		Filter("UserID", id).Delete(); err != nil {
 		return err
 	}
 	return nil

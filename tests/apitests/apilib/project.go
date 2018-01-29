@@ -45,25 +45,15 @@ type Project struct {
 	// The owner name of the project.
 	OwnerName string `json:"owner_name,omitempty"`
 
-	// The metadata of the project.
-	Metadata map[string]string `json:"metadata,omitempty"`
+	// The public status of the project.
+	Public int32 `json:"public,omitempty"`
 
 	// Correspond to the UI about whether the project's publicity is  updatable (for UI)
-	Togglable bool `json:"togglable,omitempty"`
+	Togglable bool `json:"Togglable,omitempty"`
 
 	// The role ID of the current user who triggered the API (for UI)
 	CurrentUserRoleId int32 `json:"current_user_role_id,omitempty"`
 
 	// The number of the repositories under this project.
 	RepoCount int32 `json:"repo_count,omitempty"`
-}
-
-type ProjectQuery struct {
-	Name     string `url:"name,omitempty"`
-	Owner    string `url:"owner,omitempty"`
-	Public   bool   `url:"public,omitempty"`
-	Member   string `url:"member,omitempty"`
-	Role     int    `url:"role,omitempty"`
-	Page     int64  `url:"page,omitempty"`
-	PageSize int64  `url:"page_size,omitempty"`
 }

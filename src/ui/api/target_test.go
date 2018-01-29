@@ -1,27 +1,12 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 package api
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/vmware/harbor/tests/apitests/apilib"
 )
 
@@ -45,18 +30,17 @@ func TestTargetsPost(t *testing.T) {
 
 	//-------------------case 1 : response code = 201------------------------//
 	fmt.Println("case 1 : response code = 201")
-	httpStatusCode, body, err := apiTest.AddTargets(*admin, *repTargets)
+	httpStatusCode, err = apiTest.AddTargets(*admin, *repTargets)
 	if err != nil {
 		t.Error("Error whihle add targets", err.Error())
 		t.Log(err)
 	} else {
 		assert.Equal(int(201), httpStatusCode, "httpStatusCode should be 201")
-		t.Log(body)
 	}
 
 	//-----------case 2 : response code = 409,name is already used-----------//
 	fmt.Println("case 2 : response code = 409,name is already used")
-	httpStatusCode, _, err = apiTest.AddTargets(*admin, *repTargets)
+	httpStatusCode, err = apiTest.AddTargets(*admin, *repTargets)
 	if err != nil {
 		t.Error("Error whihle add targets", err.Error())
 		t.Log(err)
@@ -67,7 +51,7 @@ func TestTargetsPost(t *testing.T) {
 	//-----------case 3 : response code = 409,name is already used-----------//
 	fmt.Println("case 3 : response code = 409,endPoint is already used")
 	repTargets.Username = "errName"
-	httpStatusCode, _, err = apiTest.AddTargets(*admin, *repTargets)
+	httpStatusCode, err = apiTest.AddTargets(*admin, *repTargets)
 	if err != nil {
 		t.Error("Error whihle add targets", err.Error())
 		t.Log(err)
@@ -77,7 +61,7 @@ func TestTargetsPost(t *testing.T) {
 
 	//--------case 4 : response code = 401,User need to log in first.--------//
 	fmt.Println("case 4 : response code = 401,User need to log in first.")
-	httpStatusCode, _, err = apiTest.AddTargets(*unknownUsr, *repTargets)
+	httpStatusCode, err = apiTest.AddTargets(*unknownUsr, *repTargets)
 	if err != nil {
 		t.Error("Error whihle add targets", err.Error())
 		t.Log(err)
@@ -112,46 +96,47 @@ func TestTargetsGet(t *testing.T) {
 }
 
 func TestTargetPing(t *testing.T) {
+	var httpStatusCode int
+	var err error
+
+	assert := assert.New(t)
 	apiTest := newHarborAPI()
 
-	// 404: not exist target
-	target01 := struct {
-		ID int64 `json:"id"`
-	}{
-		ID: 10000,
+	fmt.Println("Testing Targets Ping Post API")
+
+	//-------------------case 1 : response code = 200------------------------//
+	fmt.Println("case 1 : response code = 200")
+	id := strconv.Itoa(addTargetID)
+	httpStatusCode, err = apiTest.PingTargetsByID(*admin, id)
+	if err != nil {
+		t.Error("Error whihle ping target", err.Error())
+		t.Log(err)
+	} else {
+		assert.Equal(int(200), httpStatusCode, "httpStatusCode should be 200")
 	}
 
-	code, err := apiTest.PingTarget(*admin, target01)
-	require.Nil(t, err)
-	assert.Equal(t, http.StatusNotFound, code)
-
-	// 400: empty endpoint
-	target02 := struct {
-		Endpoint string `json:"endpoint"`
-	}{
-		Endpoint: "",
+	//--------------case 2 : response code = 404,target not found------------//
+	fmt.Println("case 2 : response code = 404,target not found")
+	id = "1111"
+	httpStatusCode, err = apiTest.PingTargetsByID(*admin, id)
+	if err != nil {
+		t.Error("Error whihle ping target", err.Error())
+		t.Log(err)
+	} else {
+		assert.Equal(int(404), httpStatusCode, "httpStatusCode should be 404")
 	}
-	code, err = apiTest.PingTarget(*admin, target02)
-	require.Nil(t, err)
-	assert.Equal(t, http.StatusBadRequest, code)
 
-	// 200
-	target03 := struct {
-		ID       int64  `json:"id"`
-		Endpoint string `json:"endpoint"`
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Insecure bool   `json:"insecure"`
-	}{
-		ID:       int64(addTargetID),
-		Endpoint: os.Getenv("REGISTRY_URL"),
-		Username: adminName,
-		Password: adminPwd,
-		Insecure: true,
+	//------------case 3 : response code = 400,targetID is invalid-----------//
+	fmt.Println("case 2 : response code = 400,target not found")
+	id = "cc"
+	httpStatusCode, err = apiTest.PingTargetsByID(*admin, id)
+	if err != nil {
+		t.Error("Error whihle ping target", err.Error())
+		t.Log(err)
+	} else {
+		assert.Equal(int(400), httpStatusCode, "httpStatusCode should be 400")
 	}
-	code, err = apiTest.PingTarget(*admin, target03)
-	require.Nil(t, err)
-	assert.Equal(t, http.StatusOK, code)
+
 }
 
 func TestTargetGetByID(t *testing.T) {

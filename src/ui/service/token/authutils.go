@@ -1,16 +1,17 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+   Copyright (c) 2016 VMware, Inc. All Rights Reserved.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
 
 package token
 
@@ -23,23 +24,24 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/distribution/registry/auth/token"
-	"github.com/docker/libtrust"
-	"github.com/vmware/harbor/src/common/models"
-	"github.com/vmware/harbor/src/common/security"
+	"github.com/vmware/harbor/src/common/dao"
 	"github.com/vmware/harbor/src/common/utils/log"
 	"github.com/vmware/harbor/src/ui/config"
-	"github.com/vmware/harbor/src/ui/promgr"
+
+	"github.com/docker/distribution/registry/auth/token"
+	"github.com/docker/libtrust"
 )
 
 const (
-	issuer = "harbor-token-issuer"
+	issuer     = "registry-token-issuer"
+	privateKey = "/etc/ui/private_key.pem"
 )
 
-var privateKey string
+var expiration int //minutes
 
 func init() {
-	privateKey = "/etc/ui/private_key.pem"
+	expiration = config.TokenExpiration()
+	log.Infof("token expiration: %d minutes", expiration)
 }
 
 // GetResourceActions ...
@@ -53,21 +55,16 @@ func GetResourceActions(scopes []string) []*token.ResourceActions {
 		items := strings.Split(s, ":")
 		length := len(items)
 
-		typee := ""
-		name := ""
-		actions := []string{}
+		typee := items[0]
 
-		if length == 1 {
-			typee = items[0]
-		} else if length == 2 {
-			typee = items[0]
+		name := ""
+		if length > 1 {
 			name = items[1]
-		} else {
-			typee = items[0]
-			name = strings.Join(items[1:length-1], ":")
-			if len(items[length-1]) > 0 {
-				actions = strings.Split(items[length-1], ",")
-			}
+		}
+
+		actions := []string{}
+		if length > 2 {
+			actions = strings.Split(items[2], ",")
 		}
 
 		res = append(res, &token.ResourceActions{
@@ -79,61 +76,89 @@ func GetResourceActions(scopes []string) []*token.ResourceActions {
 	return res
 }
 
-//filterAccess iterate a list of resource actions and try to use the filter that matches the resource type to filter the actions.
-func filterAccess(access []*token.ResourceActions, ctx security.Context,
-	pm promgr.ProjectManager, filters map[string]accessFilter) error {
-	var err error
-	for _, a := range access {
-		f, ok := filters[a.Type]
-		if !ok {
-			a.Actions = []string{}
-			log.Warningf("No filter found for access type: %s, skip filter, the access of resource '%s' will be set empty.", a.Type, a.Name)
-			continue
-		}
-		err = f.filter(ctx, pm, a)
-		log.Debugf("user: %s, access: %v", ctx.GetUsername(), a)
-		if err != nil {
-			return err
+// FilterAccess modify the action list in access based on permission
+func FilterAccess(username string, a *token.ResourceActions) {
+
+	if a.Type == "registry" && a.Name == "catalog" {
+		log.Infof("current access, type: %s, name:%s, actions:%v \n", a.Type, a.Name, a.Actions)
+		return
+	}
+
+	//clear action list to assign to new acess element after perm check.
+	a.Actions = []string{}
+	if a.Type == "repository" {
+		repoSplit := strings.Split(a.Name, "/")
+		repoLength := len(repoSplit)
+		if repoLength > 1 { //Only check the permission when the requested image has a namespace, i.e. project
+			var projectName string
+			registryURL := config.ExtRegistryURL()
+			if repoSplit[0] == registryURL {
+				projectName = repoSplit[1]
+				log.Infof("Detected Registry URL in Project Name. Assuming this is a notary request and setting Project Name as %s\n", projectName)
+			} else {
+				projectName = repoSplit[0]
+			}
+			var permission string
+			if len(username) > 0 {
+				isAdmin, err := dao.IsAdminRole(username)
+				if err != nil {
+					log.Errorf("Error occurred in IsAdminRole: %v", err)
+				}
+				if isAdmin {
+					exist, err := dao.ProjectExists(projectName)
+					if err != nil {
+						log.Errorf("Error occurred in CheckExistProject: %v", err)
+						return
+					}
+					if exist {
+						permission = "RWM"
+					} else {
+						permission = ""
+						log.Infof("project %s does not exist, set empty permission for admin\n", projectName)
+					}
+				} else {
+					permission, err = dao.GetPermission(username, projectName)
+					if err != nil {
+						log.Errorf("Error occurred in GetPermission: %v", err)
+						return
+					}
+				}
+			}
+			if strings.Contains(permission, "W") {
+				a.Actions = append(a.Actions, "push")
+			}
+			if strings.Contains(permission, "M") {
+				a.Actions = append(a.Actions, "*")
+			}
+			if strings.Contains(permission, "R") || dao.IsProjectPublic(projectName) {
+				a.Actions = append(a.Actions, "pull")
+			}
 		}
 	}
-	return nil
+	log.Infof("current access, type: %s, name:%s, actions:%v \n", a.Type, a.Name, a.Actions)
+}
+
+// GenTokenForUI is for the UI process to call, so it won't establish a https connection from UI to proxy.
+func GenTokenForUI(username string, service string, scopes []string) (token string, expiresIn int, issuedAt *time.Time, err error) {
+	access := GetResourceActions(scopes)
+	for _, a := range access {
+		FilterAccess(username, a)
+	}
+	return MakeToken(username, service, access)
 }
 
 // MakeToken makes a valid jwt token based on parms.
-func MakeToken(username, service string, access []*token.ResourceActions) (*models.Token, error) {
+func MakeToken(username, service string, access []*token.ResourceActions) (token string, expiresIn int, issuedAt *time.Time, err error) {
 	pk, err := libtrust.LoadKeyFile(privateKey)
 	if err != nil {
-		return nil, err
+		return "", 0, nil, err
 	}
-	expiration, err := config.TokenExpiration()
-	if err != nil {
-		return nil, err
-	}
-
 	tk, expiresIn, issuedAt, err := makeTokenCore(issuer, username, service, expiration, access, pk)
 	if err != nil {
-		return nil, err
+		return "", 0, nil, err
 	}
 	rs := fmt.Sprintf("%s.%s", tk.Raw, base64UrlEncode(tk.Signature))
-	return &models.Token{
-		Token:     rs,
-		ExpiresIn: expiresIn,
-		IssuedAt:  issuedAt.Format(time.RFC3339),
-	}, nil
-}
-
-func permToActions(p string) []string {
-	res := []string{}
-	if strings.Contains(p, "W") {
-		res = append(res, "push")
-	}
-	if strings.Contains(p, "M") {
-		res = append(res, "*")
-	}
-	if strings.Contains(p, "R") {
-		res = append(res, "pull")
-	}
-	return res
+	return rs, expiresIn, issuedAt, nil
 }
 
 //make token core

@@ -1,16 +1,3 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 package api
 
 import (
@@ -40,7 +27,8 @@ func TestMemGet(t *testing.T) {
 		t.Log(err)
 	} else {
 		assert.Equal(int(200), httpStatusCode, "httpStatusCode should be 200")
-		assert.Equal("proj_admin", result[0].Username, "User name should be proj_admin")
+		assert.Equal(int(1), result[0].UserId, "User Id should be 1")
+		assert.Equal("admin", result[0].Username, "User name should be admin")
 	}
 
 	//---------case 2: Response Code=401,User need to log in first.----------//

@@ -1,21 +1,24 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+   Copyright (c) 2016 VMware, Inc. All Rights Reserved.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
 
 package api
 
 import (
 	"fmt"
+	"io"
+	"io/ioutil"
 	"net/http"
 	"strconv"
 	"time"
@@ -23,33 +26,29 @@ import (
 	"github.com/vmware/harbor/src/common/dao"
 	"github.com/vmware/harbor/src/common/models"
 	"github.com/vmware/harbor/src/common/utils/log"
-	"github.com/vmware/harbor/src/replication/core"
-	api_models "github.com/vmware/harbor/src/ui/api/models"
-	"github.com/vmware/harbor/src/ui/config"
-	"github.com/vmware/harbor/src/ui/utils"
+    "github.com/vmware/harbor/src/common/api"
 )
 
 // RepJobAPI handles request to /api/replicationJobs /api/replicationJobs/:id/log
 type RepJobAPI struct {
-	BaseController
+	api.BaseAPI
 	jobID int64
 }
 
 // Prepare validates that whether user has system admin role
 func (ra *RepJobAPI) Prepare() {
-	ra.BaseController.Prepare()
-	if !ra.SecurityCtx.IsAuthenticated() {
-		ra.HandleUnauthorized()
-		return
+	uid := ra.ValidateUser()
+	isAdmin, err := dao.IsAdminRole(uid)
+	if err != nil {
+		log.Errorf("Failed to Check if the user is admin, error: %v, uid: %d", err, uid)
+	}
+	if !isAdmin {
+		ra.CustomAbort(http.StatusForbidden, "")
 	}
 
-	if !(ra.Ctx.Request.Method == http.MethodGet || ra.SecurityCtx.IsSysAdmin()) {
-		ra.HandleForbidden(ra.SecurityCtx.GetUsername())
-		return
-	}
-
-	if len(ra.GetStringFromPath(":id")) != 0 {
-		id, err := ra.GetInt64FromPath(":id")
+	idStr := ra.Ctx.Input.Param(":id")
+	if len(idStr) != 0 {
+		id, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil {
 			ra.CustomAbort(http.StatusBadRequest, "ID is invalid")
 		}
@@ -66,23 +65,18 @@ func (ra *RepJobAPI) List() {
 		ra.CustomAbort(http.StatusBadRequest, "invalid policy_id")
 	}
 
-	policy, err := core.GlobalController.GetPolicy(policyID)
+	policy, err := dao.GetRepPolicy(policyID)
 	if err != nil {
 		log.Errorf("failed to get policy %d: %v", policyID, err)
 		ra.CustomAbort(http.StatusInternalServerError, "")
 	}
 
-	if policy.ID == 0 {
+	if policy == nil {
 		ra.CustomAbort(http.StatusNotFound, fmt.Sprintf("policy %d not found", policyID))
 	}
 
-	if !ra.SecurityCtx.HasAllPerm(policy.ProjectIDs[0]) {
-		ra.HandleForbidden(ra.SecurityCtx.GetUsername())
-		return
-	}
-
 	repository := ra.GetString("repository")
-	statuses := ra.GetStrings("status")
+	status := ra.GetString("status")
 
 	var startTime *time.Time
 	startTimeStr := ra.GetString("start_time")
@@ -108,11 +102,11 @@ func (ra *RepJobAPI) List() {
 
 	page, pageSize := ra.GetPaginationParams()
 
-	jobs, total, err := dao.FilterRepJobs(policyID, repository, statuses,
+	jobs, total, err := dao.FilterRepJobs(policyID, repository, status,
 		startTime, endTime, pageSize, pageSize*(page-1))
 	if err != nil {
-		log.Errorf("failed to filter jobs according policy ID %d, repository %s, status %v, start time %v, end time %v: %v",
-			policyID, repository, statuses, startTime, endTime, err)
+		log.Errorf("failed to filter jobs according policy ID %d, repository %s, status %s, start time %v, end time %v: %v",
+			policyID, repository, status, startTime, endTime, err)
 		ra.CustomAbort(http.StatusInternalServerError, "")
 	}
 
@@ -154,55 +148,37 @@ func (ra *RepJobAPI) GetLog() {
 		ra.CustomAbort(http.StatusBadRequest, "id is nil")
 	}
 
-	job, err := dao.GetRepJob(ra.jobID)
+	req, err := http.NewRequest("GET", buildJobLogURL(strconv.FormatInt(ra.jobID, 10)), nil)
 	if err != nil {
-		ra.HandleInternalServerError(fmt.Sprintf("failed to get replication job %d: %v", ra.jobID, err))
-		return
+		log.Errorf("failed to create a request: %v", err)
+		ra.CustomAbort(http.StatusInternalServerError, "")
 	}
-
-	if job == nil {
-		ra.HandleNotFound(fmt.Sprintf("replication job %d not found", ra.jobID))
-		return
-	}
-
-	policy, err := core.GlobalController.GetPolicy(job.PolicyID)
+	addAuthentication(req)
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
-		ra.HandleInternalServerError(fmt.Sprintf("failed to get policy %d: %v", job.PolicyID, err))
+		log.Errorf("failed to get log for job %d: %v", ra.jobID, err)
+		ra.CustomAbort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		ra.Ctx.ResponseWriter.Header().Set(http.CanonicalHeaderKey("Content-Length"), resp.Header.Get(http.CanonicalHeaderKey("Content-Length")))
+		ra.Ctx.ResponseWriter.Header().Set(http.CanonicalHeaderKey("Content-Type"), "text/plain")
+
+		if _, err = io.Copy(ra.Ctx.ResponseWriter, resp.Body); err != nil {
+			log.Errorf("failed to write log to response; %v", err)
+			ra.CustomAbort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+		}
 		return
 	}
 
-	if !ra.SecurityCtx.HasAllPerm(policy.ProjectIDs[0]) {
-		ra.HandleForbidden(ra.SecurityCtx.GetUsername())
-		return
-	}
-
-	url := buildJobLogURL(strconv.FormatInt(ra.jobID, 10), ReplicationJobType)
-	err = utils.RequestAsUI(http.MethodGet, url, nil, utils.NewJobLogRespHandler(&ra.BaseAPI))
+	b, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		ra.RenderError(http.StatusInternalServerError, err.Error())
-		return
-	}
-}
-
-// StopJobs stop replication jobs for the policy
-func (ra *RepJobAPI) StopJobs() {
-	req := &api_models.StopJobsReq{}
-	ra.DecodeJSONReqAndValidate(req)
-
-	policy, err := core.GlobalController.GetPolicy(req.PolicyID)
-	if err != nil {
-		ra.HandleInternalServerError(fmt.Sprintf("failed to get policy %d: %v", req.PolicyID, err))
-		return
+		log.Errorf("failed to read reponse body: %v", err)
+		ra.CustomAbort(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 	}
 
-	if policy.ID == 0 {
-		ra.CustomAbort(http.StatusNotFound, fmt.Sprintf("policy %d not found", req.PolicyID))
-	}
-
-	if err = config.GlobalJobserviceClient.StopReplicationJobs(req.PolicyID); err != nil {
-		ra.HandleInternalServerError(fmt.Sprintf("failed to stop replication jobs of policy %d: %v", req.PolicyID, err))
-		return
-	}
+	ra.CustomAbort(resp.StatusCode, string(b))
 }
 
 //TODO:add Post handler to call job service API to submit jobs by policy

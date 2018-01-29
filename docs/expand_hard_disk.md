@@ -1,10 +1,8 @@
 # Expand the Hard Disk of Virtual Appliance
 
-If you install Harbor with OVA, the persistent data(such as images and database) is stored in a hard disk which is mounted on directory "/data", and the default size is 60GB. As more and more images are pushed into it, the capacity may not meet your requirements.  
+If you install Harbor with OVA, the persistent data(such as images and database) is stored in a hard disk which is mounted on directory "/data", and the default size is 50GB. As more and more images are pushed into it, the capacity may not meet your requirements.  
 
-You can check the space on Harbor web UI by clicking on **Projects**:
-
-
+You can check the space on Harbor web UI by clicking on the admin's name at the upper left corner and selecting "About" from the drop-down menu if you log in with an admin user:
 
 ![lvm](img/lvm/check_on_ui_01.png)
 

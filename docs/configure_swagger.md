@@ -1,6 +1,8 @@
 # View and test Harbor REST API via Swagger
-A Swagger file is provided for viewing and testing Harbor REST API.
-
+A Swagger file is provided for viewing and testing Harbor REST API. First, you should get the source code of Harbor:
+```sh
+   git clone git@github.com:vmware/harbor.git
+```
 ### Viewing Harbor REST API
 * Open the file **swagger.yaml** under the _docs_ directory in Harbor project;
 * Paste all its content into the online Swagger Editor at http://editor.swagger.io. The descriptions of Harbor API will be shown on the right pane of the page.
@@ -8,15 +10,15 @@ A Swagger file is provided for viewing and testing Harbor REST API.
 ![Swagger Editor](img/swaggerEditor.png)
 
 ### Testing Harbor REST API
-From time to time, you may need to mannually test Harbor REST API. You can deploy the Swagger file into Harbor's service node. Suppose you install Harbor through online or offline installer, you should have a Harbor directory after you un-tar the installer, such as **~/harbor**.
+From time to time, you may need to mannually test Harbor REST API. You can deploy the Swagger file into Harbor's service node. 
 
 **Caution:** When using Swagger to send REST requests to Harbor, you may alter the data of Harbor accidentally. For this reason, it is NOT recommended using Swagger against a production Harbor instance.
 
-* Download _prepare-swagger.sh_ and _swagger.yaml_ under the _docs_ directory to your local Harbor directory, e.g. **~/harbor**.
+* Change the directory to _docs_ in Harbor project.
 ```sh
-  wget https://raw.githubusercontent.com/vmware/harbor/master/docs/prepare-swagger.sh https://raw.githubusercontent.com/vmware/harbor/master/docs/swagger.yaml
+  cd docs
 ```
-* Edit the script file _prepare-swagger.sh_.
+* Edit the script file _prepare-swagger.sh_ under the _docs_ directory.
 ```sh
   vi prepare-swagger.sh
 ```
@@ -28,15 +30,15 @@ From time to time, you may need to mannually test Harbor REST API. You can deplo
 ```sh
   SERVER_ID=<HARBOR_SERVER_DOMAIN>
 ```
-* Change the file mode.
-```sh
-  chmod +x prepare-swagger.sh
-````
-* Run the shell script. It downloads a Swagger package and extracts files into the _../static_ directory.
+* Run the shell script. It downloads a Swagger package and extracts files into the _static_ directory in Harbor project.
 ```sh
    ./prepare-swagger.sh
 ```
-* Edit the _docker-compose.yml_ file under your local Harbor directory.
+* Change the directory to _make_
+```sh
+  cd ../make/dev
+```
+* Edit the _docker-compose.yml_ file.
 ```sh
   vi docker-compose.yml
 ```
@@ -46,20 +48,25 @@ From time to time, you may need to mannually test Harbor REST API. You can deplo
 ui:
   ... 
   volumes:
-    - ./common/config/ui/app.conf:/etc/ui/app.conf:z
-    - ./common/config/ui/private_key.pem:/etc/ui/private_key.pem:z
-    - /data/secretkey:/etc/ui/key:z
-    - /data/ca_download/:/etc/ui/ca/:z
+    - ./config/ui/app.conf:/etc/ui/app.conf
+    - ./config/ui/private_key.pem:/etc/ui/private_key.pem
     ## add two lines as below ##
-    - ../src/ui/static/vendors/swagger-ui-2.1.4/dist:/harbor/static/vendors/swagger
-    - ../src/ui/static/resources/yaml/swagger.yaml:/harbor/static/resources/yaml/swagger.yaml
+    - ../../src/ui/static/vendors/swagger-ui-2.1.4/dist:/go/bin/static/vendors/swagger
+    - ../../src/ui/static/resources/yaml/swagger.yaml:/go/bin/static/resources/yaml/swagger.yaml
     ...
 ```
-* Recreate Harbor containers
+* Rebuild Harbor project
 ```docker
-    docker-compose down -v && docker-compose up -d
+    docker-compose build
 ```
-
+* Clean up the previous running version. NOTE: The command does not remove your existing data.
+```docker
+   docker-compose rm
+```
+* Start the new Harbor build
+```docker
+   docker-compose up
+```
 * Because a session ID is usually required by Harbor API, **you should log in first from a browser.**
 * Open another tab in the same browser so that the session is shared between tabs.
 * Enter the URL of the Swagger page in Harbor as below. The ```<HARBOR_SERVER>``` should be replaced by the IP address or the hostname of the Harbor server.

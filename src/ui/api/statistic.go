@@ -1,37 +1,37 @@
-// Copyright (c) 2017 VMware, Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+   Copyright (c) 2016 VMware, Inc. All Rights Reserved.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
 
 package api
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/vmware/harbor/src/common/dao"
-	"github.com/vmware/harbor/src/common/models"
 	"github.com/vmware/harbor/src/common/utils/log"
+    "github.com/vmware/harbor/src/common/api"
 )
 
 const (
-	// PriPC : count of private projects
-	PriPC = "private_project_count"
-	// PriRC : count of private repositories
-	PriRC = "private_repo_count"
-	// PubPC : count of public projects
-	PubPC = "public_project_count"
-	// PubRC : count of public repositories
-	PubRC = "public_repo_count"
+	// MPC : count of my projects
+	MPC = "my_project_count"
+	// MRC : count of my repositories
+	MRC = "my_repo_count"
+	// PPC : count of public projects
+	PPC = "public_project_count"
+	// PRC : count of public repositories
+	PRC = "public_repo_count"
 	// TPC : total count of projects
 	TPC = "total_project_count"
 	// TRC : total count of repositories
@@ -40,87 +40,69 @@ const (
 
 // StatisticAPI handles request to /api/statistics/
 type StatisticAPI struct {
-	BaseController
-	username string
+	api.BaseAPI
+	userID int
 }
 
 //Prepare validates the URL and the user
 func (s *StatisticAPI) Prepare() {
-	s.BaseController.Prepare()
-	if !s.SecurityCtx.IsAuthenticated() {
-		s.HandleUnauthorized()
-		return
-	}
-	s.username = s.SecurityCtx.GetUsername()
+	s.userID = s.ValidateUser()
 }
 
 // Get total projects and repos of the user
 func (s *StatisticAPI) Get() {
 	statistic := map[string]int64{}
-	pubProjs, err := s.ProjectMgr.GetPublic()
+
+	n, err := dao.GetTotalOfProjects("", 1)
 	if err != nil {
-		s.ParseAndHandleError("failed to get public projects", err)
-		return
+		log.Errorf("failed to get total of public projects: %v", err)
+		s.CustomAbort(http.StatusInternalServerError, "")
 	}
+	statistic[PPC] = n
 
-	statistic[PubPC] = (int64)(len(pubProjs))
-
-	ids := []int64{}
-	for _, p := range pubProjs {
-		ids = append(ids, p.ProjectID)
-	}
-	n, err := dao.GetTotalOfRepositoriesByProject(ids, "")
+	n, err = dao.GetTotalOfPublicRepositories("")
 	if err != nil {
 		log.Errorf("failed to get total of public repositories: %v", err)
 		s.CustomAbort(http.StatusInternalServerError, "")
 	}
-	statistic[PubRC] = n
+	statistic[PRC] = n
 
-	if s.SecurityCtx.IsSysAdmin() {
-		result, err := s.ProjectMgr.List(nil)
+	isAdmin, err := dao.IsAdminRole(s.userID)
+	if err != nil {
+		log.Errorf("Error occured in check admin, error: %v", err)
+		s.CustomAbort(http.StatusInternalServerError, "Internal error.")
+	}
+
+	if isAdmin {
+		n, err := dao.GetTotalOfProjects("")
 		if err != nil {
 			log.Errorf("failed to get total of projects: %v", err)
 			s.CustomAbort(http.StatusInternalServerError, "")
 		}
-		statistic[TPC] = result.Total
-		statistic[PriPC] = result.Total - statistic[PubPC]
+		statistic[MPC] = n
+		statistic[TPC] = n
 
-		n, err := dao.GetTotalOfRepositories("")
+		n, err = dao.GetTotalOfRepositories("")
 		if err != nil {
 			log.Errorf("failed to get total of repositories: %v", err)
 			s.CustomAbort(http.StatusInternalServerError, "")
 		}
+		statistic[MRC] = n
 		statistic[TRC] = n
-		statistic[PriRC] = n - statistic[PubRC]
 	} else {
-		value := false
-		result, err := s.ProjectMgr.List(&models.ProjectQueryParam{
-			Public: &value,
-			Member: &models.MemberQuery{
-				Name: s.username,
-			},
-		})
+		n, err := dao.GetTotalOfUserRelevantProjects(s.userID, "")
 		if err != nil {
-			s.ParseAndHandleError(fmt.Sprintf(
-				"failed to get projects of user %s", s.username), err)
-			return
+			log.Errorf("failed to get total of projects for user %d: %v", s.userID, err)
+			s.CustomAbort(http.StatusInternalServerError, "")
 		}
+		statistic[MPC] = n
 
-		statistic[PriPC] = result.Total
-
-		ids := []int64{}
-		for _, p := range result.Projects {
-			ids = append(ids, p.ProjectID)
-		}
-
-		n, err = dao.GetTotalOfRepositoriesByProject(ids, "")
+		n, err = dao.GetTotalOfUserRelevantRepositories(s.userID, "")
 		if err != nil {
-			s.HandleInternalServerError(fmt.Sprintf(
-				"failed to get total of repositories for user %s: %v",
-				s.username, err))
-			return
+			log.Errorf("failed to get total of repositories for user %d: %v", s.userID, err)
+			s.CustomAbort(http.StatusInternalServerError, "")
 		}
-		statistic[PriRC] = n
+		statistic[MRC] = n
 	}
 
 	s.Data["json"] = statistic
